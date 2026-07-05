@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  LowBand — ADMX Group Policy Administrative Template
+  ====================================================
+  Deploy this file to configure LowBand endpoints for silent enterprise
+  deployment via Windows Group Policy or Microsoft Intune (ADMX ingestion).
+
+  Deployment steps:
+    1. Copy lowband.admx to:
+         %SystemRoot%\PolicyDefinitions\
+         (or the Central Store: \\<domain>\SYSVOL\<domain>\Policies\PolicyDefinitions\)
+    2. Copy en-US\lowband.adml to:
+         %SystemRoot%\PolicyDefinitions\en-US\
+         (or \\<domain>\SYSVOL\<domain>\Policies\PolicyDefinitions\en-US\)
+    3. Open Group Policy Management (gpmc.msc), create or edit a GPO,
+       and navigate to:
+         Computer Configuration → Administrative Templates → LowBand
+    4. Configure the signaling and TURN settings, then link the GPO to
+       the target OU before pushing the MSI.
+
+  Intune (ADMX-backed OMA-URI):
+    Upload this .admx and the companion .adml via:
+      Devices → Configuration → Create → Windows 10 and later → Templates →
+      Administrative Templates → Import (preview) or use OMA-URI custom profile.
+    OMA-URI prefix for all settings:
+      ./Device/Vendor/MSFT/Policy/Config/LowBand~Policy~LowBand~Network/<PolicyName>
+
+  Registry writes land under:
+    HKLM\SOFTWARE\Policies\LowBand\   (machine policy — preferred)
+    HKCU\SOFTWARE\Policies\LowBand\   (user policy — not used by the service)
+
+  The lowbandd daemon reads HKLM\SOFTWARE\Policies\LowBand at startup and on
+  SIGHUP-equivalent (service control PARAMCHANGE).  Policy values override
+  anything in the local config file; the local file is the fallback.
+-->
+<policyDefinitions
+    xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions"
+    revision="1.0"
+    schemaVersion="1.0">
+
+  <policyNamespaces>
+    <target prefix="lowband" namespace="LowBand.Policies"/>
+    <using prefix="windows" namespace="Microsoft.Policies.Windows"/>
+  </policyNamespaces>
+
+  <resources minRequiredRevision="1.0"/>
+
+  <supportedOn>
+    <definitions>
+      <definition name="SUPPORTED_Win10_1607"
+                  displayName="$(string.SUPPORTED_Win10_1607)"/>
+    </definitions>
+  </supportedOn>
+
+  <categories>
+    <category name="LowBand" displayName="$(string.LowBand_Cat)">
+      <parentCategory ref="windows:WindowsComponents"/>
+    </category>
+    <category name="LowBand_Network" displayName="$(string.LowBand_Network_Cat)">
+      <parentCategory ref="LowBand"/>
+    </category>
+    <category name="LowBand_Security" displayName="$(string.LowBand_Security_Cat)">
+      <parentCategory ref="LowBand"/>
+    </category>
+  </categories>
+
+  <policies>
+
+    <!-- ── Signaling server URL ──────────────────────────────────────────── -->
+    <!--
+      Sets the WebSocket rendezvous endpoint.
+      Registry: HKLM\SOFTWARE\Policies\LowBand\SignalingUrl (REG_SZ)
+      Default (not configured): value from local config file or SIGNALING_URL env var.
+    -->
+    <policy name="SignalingUrl"
+            class="Machine"
+            displayName="$(string.SignalingUrl_Name)"
+            explainText="$(string.SignalingUrl_Help)"
+            presentation="$(presentation.SignalingUrl)"
+            key="SOFTWARE\Policies\LowBand"
+            valueName="SignalingUrl">
+      <parentCategory ref="LowBand_Network"/>
+      <supportedOn ref="SUPPORTED_Win10_1607"/>
+      <elements>
+        <text id="SignalingUrl_Value"
+              valueName="SignalingUrl"
+              required="true"
+              maxLength="2048"/>
+      </elements>
+    </policy>
+
+    <!-- ── TURN server URL ───────────────────────────────────────────────── -->
+    <!--
+      Sets the TURN relay endpoint (coTURN or similar).
+      Registry: HKLM\SOFTWARE\Policies\LowBand\TurnUrl (REG_SZ)
+    -->
+    <policy name="TurnUrl"
+            class="Machine"
+            displayName="$(string.TurnUrl_Name)"
+            explainText="$(string.TurnUrl_Help)"
+            presentation="$(presentation.TurnUrl)"
+            key="SOFTWARE\Policies\LowBand"
+            valueName="TurnUrl">
+      <parentCategory ref="LowBand_Network"/>
+      <supportedOn ref="SUPPORTED_Win10_1607"/>
+      <elements>
+        <text id="TurnUrl_Value"
+              valueName="TurnUrl"
+              required="true"
+              maxLength="2048"/>
+      </elements>
+    </policy>
+
+    <!-- ── TURN shared secret ────────────────────────────────────────────── -->
+    <!--
+      Sets the HMAC-SHA1 shared secret for TURN credential minting.
+      Registry: HKLM\SOFTWARE\Policies\LowBand\TurnSharedSecret (REG_SZ)
+      IMPORTANT: protect this GPO with WMI filter or GPO delegation so that
+      only the device computer accounts (not interactive users) can read it.
+    -->
+    <policy name="TurnSharedSecret"
+            class="Machine"
+            displayName="$(string.TurnSharedSecret_Name)"
+            explainText="$(string.TurnSharedSecret_Help)"
+            presentation="$(presentation.TurnSharedSecret)"
+            key="SOFTWARE\Policies\LowBand"
+            valueName="TurnSharedSecret">
+      <parentCategory ref="LowBand_Network"/>
+      <supportedOn ref="SUPPORTED_Win10_1607"/>
+      <elements>
+        <text id="TurnSharedSecret_Value"
+              valueName="TurnSharedSecret"
+              required="true"
+              maxLength="512"/>
+      </elements>
+    </policy>
+
+    <!-- ── Disable auto-update ───────────────────────────────────────────── -->
+    <!--
+      When enabled, prevents the client from polling for or applying in-app
+      updates.  Use this when updates are delivered exclusively through the
+      MSI via MDM (Intune, SCCM) or GPO Software Installation.
+      Registry: HKLM\SOFTWARE\Policies\LowBand\DisableAutoUpdate (REG_DWORD 1)
+    -->
+    <policy name="DisableAutoUpdate"
+            class="Machine"
+            displayName="$(string.DisableAutoUpdate_Name)"
+            explainText="$(string.DisableAutoUpdate_Help)"
+            key="SOFTWARE\Policies\LowBand"
+            valueName="DisableAutoUpdate">
+      <parentCategory ref="LowBand_Security"/>
+      <supportedOn ref="SUPPORTED_Win10_1607"/>
+      <enabledValue>
+        <decimal value="1"/>
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0"/>
+      </disabledValue>
+    </policy>
+
+    <!-- ── Require signed audit log ─────────────────────────────────────── -->
+    <!--
+      When enabled, lowbandd refuses to start a session if the audit_log
+      SQLite database is absent or its HMAC chain is broken.  Recommended
+      for regulated environments that need tamper-evidence guarantees.
+      Registry: HKLM\SOFTWARE\Policies\LowBand\RequireSignedAuditLog (REG_DWORD 1)
+    -->
+    <policy name="RequireSignedAuditLog"
+            class="Machine"
+            displayName="$(string.RequireSignedAuditLog_Name)"
+            explainText="$(string.RequireSignedAuditLog_Help)"
+            key="SOFTWARE\Policies\LowBand"
+            valueName="RequireSignedAuditLog">
+      <parentCategory ref="LowBand_Security"/>
+      <supportedOn ref="SUPPORTED_Win10_1607"/>
+      <enabledValue>
+        <decimal value="1"/>
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0"/>
+      </disabledValue>
+    </policy>
+
+  </policies>
+
+</policyDefinitions>

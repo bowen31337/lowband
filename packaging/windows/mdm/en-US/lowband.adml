@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  LowBand — ADMX Language Resource File (en-US)
+  Install alongside lowband.admx in:
+    %SystemRoot%\PolicyDefinitions\en-US\
+  or the Central Store equivalent.
+-->
+<policyDefinitionResources
+    xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions"
+    revision="1.0"
+    schemaVersion="1.0">
+
+  <displayName>LowBand Group Policy</displayName>
+  <description>Administrative Template for LowBand P2P Remote-Assist Client</description>
+
+  <resources>
+    <stringTable>
+
+      <string id="SUPPORTED_Win10_1607">
+        Windows 10 version 1607 (build 14393) or later / Windows Server 2016 or later
+      </string>
+
+      <!-- Category display names -->
+      <string id="LowBand_Cat">LowBand</string>
+      <string id="LowBand_Network_Cat">Network</string>
+      <string id="LowBand_Security_Cat">Security</string>
+
+      <!-- SignalingUrl -->
+      <string id="SignalingUrl_Name">Signaling server URL</string>
+      <string id="SignalingUrl_Help">
+Specifies the WebSocket rendezvous endpoint that LowBand uses to exchange
+session codes, SDP offers/answers, and trickled ICE candidates.
+
+Format: wss://&lt;hostname&gt;[:&lt;port&gt;]
+
+If this policy is enabled, the provided URL overrides the local configuration
+file and the SIGNALING_URL environment variable.
+
+If this policy is disabled or not configured, LowBand uses the URL from its
+local configuration file, or the SIGNALING_URL environment variable if set.
+
+Example: wss://signal.example.com:443
+      </string>
+
+      <!-- TurnUrl -->
+      <string id="TurnUrl_Name">TURN relay server URL</string>
+      <string id="TurnUrl_Help">
+Specifies the TURN (Traversal Using Relays around NAT) server that LowBand
+falls back to when direct UDP traversal fails.
+
+Format: turn:&lt;hostname&gt;[:&lt;port&gt;][?transport=udp|tcp]
+
+If this policy is enabled, the provided URL overrides the local configuration
+file and the TURN_URL environment variable.
+
+If this policy is disabled or not configured, LowBand uses the URL from its
+local configuration file, or the TURN_URL environment variable if set.
+
+Example: turn:turn.example.com:3478?transport=udp
+      </string>
+
+      <!-- TurnSharedSecret -->
+      <string id="TurnSharedSecret_Name">TURN shared secret</string>
+      <string id="TurnSharedSecret_Help">
+Specifies the HMAC-SHA1 shared secret used to mint short-lived TURN
+credentials via the time-based (RFC 8489 §9.2) scheme.
+
+This value must match the static-auth-secret configured on the coTURN
+server (or equivalent).
+
+SECURITY NOTE: Restrict the GPO that sets this value so that only the
+target machine computer accounts can read the setting.  Do not grant
+interactive users read access to this GPO.
+
+If this policy is enabled, the provided secret overrides the local
+configuration file and the TURN_SHARED_SECRET environment variable.
+
+If this policy is disabled or not configured, LowBand uses the value
+from its local configuration file or environment variable.
+      </string>
+
+      <!-- DisableAutoUpdate -->
+      <string id="DisableAutoUpdate_Name">Disable in-app automatic updates</string>
+      <string id="DisableAutoUpdate_Help">
+Controls whether the LowBand client polls for and applies in-app updates
+automatically.
+
+Enable this policy when software updates are delivered exclusively through
+MSI deployments via MDM (Intune, SCCM) or Group Policy Software Installation.
+Enabling this policy prevents the client from downloading or applying updates
+outside of the managed deployment channel.
+
+If this policy is enabled, the client will not check for or install updates
+automatically.  All updates must be deployed by the administrator.
+
+If this policy is disabled or not configured, the client may check for
+updates according to its built-in update schedule.
+      </string>
+
+      <!-- RequireSignedAuditLog -->
+      <string id="RequireSignedAuditLog_Name">Require signed audit log</string>
+      <string id="RequireSignedAuditLog_Help">
+Controls whether lowbandd enforces audit log integrity at session startup.
+
+When enabled, lowbandd verifies the HMAC chain of the audit_log SQLite
+database before starting any session.  If the chain is absent or broken,
+the daemon refuses to start a session and logs a tamper-evidence warning.
+This setting is recommended for regulated environments (HIPAA, SOC 2, etc.)
+that require tamper-evident session records.
+
+When disabled or not configured, lowbandd starts sessions even if the audit
+log is absent or its integrity cannot be verified.  Audit logging is still
+performed; only the enforcement gate is bypassed.
+      </string>
+
+    </stringTable>
+
+    <presentationTable>
+
+      <presentation id="SignalingUrl">
+        <textBox refId="SignalingUrl_Value">
+          <label>Signaling server URL (wss://...):</label>
+          <defaultValue>wss://signal.example.com:443</defaultValue>
+        </textBox>
+      </presentation>
+
+      <presentation id="TurnUrl">
+        <textBox refId="TurnUrl_Value">
+          <label>TURN relay URL (turn:...):</label>
+          <defaultValue>turn:turn.example.com:3478?transport=udp</defaultValue>
+        </textBox>
+      </presentation>
+
+      <presentation id="TurnSharedSecret">
+        <textBox refId="TurnSharedSecret_Value">
+          <label>TURN shared secret (HMAC-SHA1):</label>
+        </textBox>
+      </presentation>
+
+    </presentationTable>
+  </resources>
+
+</policyDefinitionResources>
