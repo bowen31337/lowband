@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      LowBand core daemon — system-domain LaunchDaemon.
+
+      The daemon runs as the least-privilege _lowband system account.
+      Operations that require elevated rights (screen capture, input injection)
+      are mediated through the MDM PPPC profile; no setuid bit is needed.
+
+      MDM administrators: pre-approve TCC via packaging/macos/mdm/lowband_pppc.mobileconfig
+      before pushing this package so the daemon can capture the screen and inject
+      input events without prompting the end user.
+    -->
+
+    <key>Label</key>
+    <string>com.lowband.lowbandd</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/lowbandd</string>
+        <string>--ipc-socket</string>
+        <string>/tmp/lowband.sock</string>
+        <string>--data-dir</string>
+        <string>/Library/Application Support/LowBand</string>
+    </array>
+
+    <!-- Start at boot and restart on crash (critical remote-assist daemon). -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Drop privileges to the system account created by postinstall. -->
+    <key>UserName</key>
+    <string>_lowband</string>
+
+    <!-- Working directory for relative file paths inside the daemon. -->
+    <key>WorkingDirectory</key>
+    <string>/Library/Application Support/LowBand</string>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/lowband/lowbandd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/lowband/lowbandd-error.log</string>
+
+    <!--
+      Prevent the OS from pausing the daemon when the system idles.
+      Required for remote-assist sessions to remain active while the
+      endpoint user is away from their machine.
+    -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <!--
+      Limit crash-loop restart rate: wait 10 s before each restart after
+      the first failure to avoid burning CPU during a persistent error.
+    -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!--
+      Soft resource limits: 512 MB virtual memory cap and 256 open files.
+      Adjust upward if large file-transfer sessions hit the FD limit.
+    -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>256</integer>
+    </dict>
+
+</dict>
+</plist>

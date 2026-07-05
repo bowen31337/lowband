@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  LowBand macOS Distribution Package Descriptor
+  ===============================================
+  Designed for silent/MDM enterprise deployment:
+    - No license agreement screen (blocks `installer` CLI)
+    - No customization UI (choices are pre-determined)
+    - Universal binary support (arm64 + x86_64)
+
+  Silent install:
+    sudo installer -pkg lowband-<version>-macos.pkg -target /
+
+  MDM deployment (Jamf, Mosyle, Kandji, etc.):
+    Upload the signed+notarized .pkg as a "Package" policy,
+    target "All Computers" or scope as needed.
+-->
+<installer-gui-script minSpecVersion="2">
+
+    <title>LowBand</title>
+    <organization>com.lowband</organization>
+
+    <!-- Silent-deploy: disable customization so MDM installs do not pause. -->
+    <options
+        customize="never"
+        allow-external-scripts="no"
+        rootVolumeOnly="true"
+        hostArchitectures="arm64,x86_64"
+    />
+
+    <!--
+      background and welcome intentionally omitted so that
+      `installer -pkg ... -target /` runs fully non-interactively.
+      Add them back only if building an interactive GUI installer variant.
+    -->
+
+    <domains enable_localSystem="true"/>
+
+    <!--
+      Single component: the lowbandd daemon + LaunchDaemon plist.
+      The UI shell is distributed separately via the .app bundle or
+      a companion pkg component (add a second pkg-ref here when ready).
+    -->
+    <pkg-ref id="com.lowband.lowbandd"
+             version="#version"
+             onConclusion="none">lowband-component.pkg</pkg-ref>
+
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.lowband.lowbandd"/>
+        </line>
+    </choices-outline>
+
+    <choice id="default"/>
+
+    <choice id="com.lowband.lowbandd"
+            title="LowBand Daemon"
+            description="Core P2P remote-assist daemon (lowbandd)"
+            visible="false"
+            enabled="true"
+            selected="true">
+        <pkg-ref id="com.lowband.lowbandd"/>
+    </choice>
+
+</installer-gui-script>

@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LowBand — Privacy Preferences Policy Control (PPPC) MDM Profile
+  ================================================================
+  This configuration profile pre-approves TCC permissions for the
+  LowBand daemon so that no user-facing consent prompt appears during
+  or after a silent pkg deployment.
+
+  Deploy via Jamf, Mosyle, Kandji, Microsoft Intune, or any MDM that
+  supports configuration profiles.
+
+  IMPORTANT: Replace every REPLACE_WITH_* placeholder with your
+  organization's values before deploying.  The CodeRequirement string
+  must exactly match the codesign -dr - output of the signed binary:
+
+    codesign -dr - /usr/local/bin/lowbandd
+
+  TCC categories granted:
+    ScreenCapture      — ScreenCaptureKit screen acquisition
+    Accessibility      — CGEvent input injection (remote control)
+    Microphone         — 48 kHz audio capture for Opus encode
+    Camera             — Camera capture for Gear A/B video
+    SystemPolicyAllFiles — SQLite store + audit log write access
+
+  Profile signing:
+    Sign this profile with your MDM vendor's signing certificate before
+    deployment so that macOS validates its provenance.  Unsigned profiles
+    require user approval via System Preferences.
+-->
+<plist version="1.0">
+<dict>
+
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>PayloadDescription</key>
+            <string>Grants TCC permissions to the LowBand daemon for enterprise remote-assist deployment.</string>
+
+            <key>PayloadDisplayName</key>
+            <string>LowBand Privacy Preferences</string>
+
+            <key>PayloadIdentifier</key>
+            <string>com.lowband.pppc.REPLACE_WITH_UUID</string>
+
+            <key>PayloadOrganization</key>
+            <string>REPLACE_WITH_ORG_NAME</string>
+
+            <key>PayloadType</key>
+            <string>com.apple.TCC.configuration-profile-policy</string>
+
+            <key>PayloadUUID</key>
+            <string>REPLACE_WITH_UUID</string>
+
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+
+            <key>Services</key>
+            <dict>
+
+                <!-- Screen capture: allows ScreenCaptureKit acquisition -->
+                <key>ScreenCapture</key>
+                <array>
+                    <dict>
+                        <key>Allowed</key>
+                        <true/>
+                        <key>CodeRequirement</key>
+                        <string>REPLACE_WITH_CODESIGN_REQUIREMENT</string>
+                        <key>Comment</key>
+                        <string>LowBand remote-assist daemon — screen capture</string>
+                        <key>Identifier</key>
+                        <string>com.lowband.lowbandd</string>
+                        <key>IdentifierType</key>
+                        <string>bundleID</string>
+                        <key>StaticCode</key>
+                        <false/>
+                    </dict>
+                </array>
+
+                <!-- Accessibility: allows CGEvent input injection -->
+                <key>Accessibility</key>
+                <array>
+                    <dict>
+                        <key>Allowed</key>
+                        <true/>
+                        <key>CodeRequirement</key>
+                        <string>REPLACE_WITH_CODESIGN_REQUIREMENT</string>
+                        <key>Comment</key>
+                        <string>LowBand remote-assist daemon — input injection</string>
+                        <key>Identifier</key>
+                        <string>com.lowband.lowbandd</string>
+                        <key>IdentifierType</key>
+                        <string>bundleID</string>
+                        <key>StaticCode</key>
+                        <false/>
+                    </dict>
+                </array>
+
+                <!-- Microphone: allows 48 kHz capture for Opus encode -->
+                <key>Microphone</key>
+                <array>
+                    <dict>
+                        <key>Allowed</key>
+                        <true/>
+                        <key>CodeRequirement</key>
+                        <string>REPLACE_WITH_CODESIGN_REQUIREMENT</string>
+                        <key>Comment</key>
+                        <string>LowBand remote-assist daemon — microphone capture</string>
+                        <key>Identifier</key>
+                        <string>com.lowband.lowbandd</string>
+                        <key>IdentifierType</key>
+                        <string>bundleID</string>
+                        <key>StaticCode</key>
+                        <false/>
+                    </dict>
+                </array>
+
+                <!-- Camera: allows camera capture for Gear A/B talking-head video -->
+                <key>Camera</key>
+                <array>
+                    <dict>
+                        <key>Allowed</key>
+                        <true/>
+                        <key>CodeRequirement</key>
+                        <string>REPLACE_WITH_CODESIGN_REQUIREMENT</string>
+                        <key>Comment</key>
+                        <string>LowBand remote-assist daemon — camera capture</string>
+                        <key>Identifier</key>
+                        <string>com.lowband.lowbandd</string>
+                        <key>IdentifierType</key>
+                        <string>bundleID</string>
+                        <key>StaticCode</key>
+                        <false/>
+                    </dict>
+                </array>
+
+                <!-- SystemPolicyAllFiles: daemon can write audit_log and session_records SQLite -->
+                <key>SystemPolicyAllFiles</key>
+                <array>
+                    <dict>
+                        <key>Allowed</key>
+                        <true/>
+                        <key>CodeRequirement</key>
+                        <string>REPLACE_WITH_CODESIGN_REQUIREMENT</string>
+                        <key>Comment</key>
+                        <string>LowBand remote-assist daemon — full file access for audit log</string>
+                        <key>Identifier</key>
+                        <string>com.lowband.lowbandd</string>
+                        <key>IdentifierType</key>
+                        <string>bundleID</string>
+                        <key>StaticCode</key>
+                        <false/>
+                    </dict>
+                </array>
+
+            </dict>
+        </dict>
+    </array>
+
+    <key>PayloadDescription</key>
+    <string>Grants LowBand the TCC permissions needed for enterprise remote-assist deployment.</string>
+
+    <key>PayloadDisplayName</key>
+    <string>LowBand Privacy Preferences Policy Control</string>
+
+    <key>PayloadIdentifier</key>
+    <string>com.lowband.pppc.profile.REPLACE_WITH_UUID</string>
+
+    <key>PayloadOrganization</key>
+    <string>REPLACE_WITH_ORG_NAME</string>
+
+    <key>PayloadRemovalDisallowed</key>
+    <true/>
+
+    <key>PayloadScope</key>
+    <string>System</string>
+
+    <key>PayloadType</key>
+    <string>Configuration</string>
+
+    <key>PayloadUUID</key>
+    <string>REPLACE_WITH_PROFILE_UUID</string>
+
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+
+</dict>
+</plist>

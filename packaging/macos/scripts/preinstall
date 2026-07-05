@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Pre-install: quiesce any running lowbandd before files are replaced.
+set -euo pipefail
+
+DAEMON_LABEL="com.lowband.lowbandd"
+PLIST="/Library/LaunchDaemons/${DAEMON_LABEL}.plist"
+
+# Unload the running daemon if it is registered with launchd.
+# Use 'bootout' (macOS 10.11+) to fully unload and wait for the process to exit.
+if launchctl list "$DAEMON_LABEL" &>/dev/null 2>&1; then
+    if [[ -f "$PLIST" ]]; then
+        launchctl bootout system "$PLIST" || launchctl unload "$PLIST" 2>/dev/null || true
+    else
+        launchctl remove "$DAEMON_LABEL" 2>/dev/null || true
+    fi
+    # Allow up to 5 s for the process to exit cleanly.
+    for _ in $(seq 1 10); do
+        launchctl list "$DAEMON_LABEL" &>/dev/null 2>&1 || break
+        sleep 0.5
+    done
+fi
+
+exit 0

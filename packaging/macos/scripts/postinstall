@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Post-install: create the _lowband system account, set file permissions,
+# and bootstrap the LaunchDaemon.
+set -euo pipefail
+
+DAEMON_LABEL="com.lowband.lowbandd"
+PLIST="/Library/LaunchDaemons/${DAEMON_LABEL}.plist"
+DAEMON_BIN="/usr/local/bin/lowbandd"
+DATA_DIR="/Library/Application Support/LowBand"
+LOG_DIR="/var/log/lowband"
+DAEMON_USER="_lowband"
+DAEMON_GROUP="_lowband"
+
+# ── Create least-privilege system account ────────────────────────────────────
+# The daemon runs as _lowband (UID < 500, shell=/usr/bin/false, home=/var/empty).
+# Input injection via CGEvent still requires the process to appear in the
+# accessibility list; the MDM PPPC profile grants that without user interaction.
+create_system_user() {
+    if id -u "$DAEMON_USER" &>/dev/null 2>&1; then
+        return 0
+    fi
+
+    # Find a free UID in the reserved system range (200–499).
+    local uid=300
+    while dscacheutil -q user -a uid "$uid" 2>/dev/null | grep -q "^uid:"; do
+        uid=$((uid + 1))
+        [[ $uid -ge 500 ]] && { echo "postinstall: no free UID in range 200-499" >&2; exit 1; }
+    done
+
+    dscl . -create "/Users/$DAEMON_USER"
+    dscl . -create "/Users/$DAEMON_USER" UserShell   /usr/bin/false
+    dscl . -create "/Users/$DAEMON_USER" RealName    "LowBand Daemon"
+    dscl . -create "/Users/$DAEMON_USER" UniqueID    "$uid"
+    dscl . -create "/Users/$DAEMON_USER" PrimaryGroupID 20
+    dscl . -create "/Users/$DAEMON_USER" NFSHomeDirectory /var/empty
+    dscl . -create "/Users/$DAEMON_USER" IsHidden    1
+}
+
+# ── Set file permissions ─────────────────────────────────────────────────────
+set_permissions() {
+    # Binary: root:wheel, 755 — readable and executable by all, writable only by root.
+    chown root:wheel "$DAEMON_BIN"
+    chmod 755 "$DAEMON_BIN"
+
+    # Data directory: owned by _lowband so the daemon can write its SQLite stores.
+    chown -R "$DAEMON_USER":wheel "$DATA_DIR"
+    chmod 750 "$DATA_DIR"
+
+    # Log directory: root:wheel, group-readable for log collection agents.
+    chown root:wheel "$LOG_DIR"
+    chmod 755 "$LOG_DIR"
+
+    # LaunchDaemon plist: root:wheel, 644 — required by launchd.
+    chown root:wheel "$PLIST"
+    chmod 644 "$PLIST"
+}
+
+# ── Bootstrap LaunchDaemon ───────────────────────────────────────────────────
+bootstrap_daemon() {
+    # 'bootstrap system' loads the plist into the system domain and starts the
+    # daemon immediately.  This is the macOS 10.11+ replacement for 'launchctl load'.
+    if launchctl list "$DAEMON_LABEL" &>/dev/null 2>&1; then
+        # Already running (upgrade case): just kickstart to pick up new binary.
+        launchctl kickstart -k "system/$DAEMON_LABEL" || true
+    else
+        launchctl bootstrap system "$PLIST"
+    fi
+}
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+create_system_user
+set_permissions
+bootstrap_daemon
+
+exit 0

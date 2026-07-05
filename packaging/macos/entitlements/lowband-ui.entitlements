@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened Runtime entitlements for the LowBand.app UI shell.
+
+  The shell communicates with lowbandd over the local IPC socket and handles
+  consent dialogs, the session view, and audit-export screens.  It intentionally
+  holds fewer entitlements than the daemon: if the shell crashes or is compromised
+  it cannot access screen content or inject input events.
+-->
+<plist version="1.0">
+<dict>
+
+    <!-- IPC socket client (connects to /tmp/lowband.sock) -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Hardened Runtime: strict defaults — no JIT, no unsigned memory -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <false/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <false/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <false/>
+
+    <!--
+      app-sandbox intentionally NOT set here: the UI shell is distributed
+      as a standalone .app (not through the App Store) and does not require
+      sandboxing.  If App Store distribution is added in the future, enable
+      sandbox and request only the entitlements listed above.
+    -->
+
+</dict>
+</plist>

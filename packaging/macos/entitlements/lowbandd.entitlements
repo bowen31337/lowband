@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened Runtime entitlements for lowbandd (the core daemon).
+
+  These entitlements are embedded by build_pkg.sh via:
+    codesign -entitlements lowbandd.entitlements -options runtime ...
+
+  Notes:
+  - Screen capture is granted at runtime via TCC (System Preferences >
+    Privacy & Security > Screen Recording, or via MDM PPPC profile).
+    The entitlement key here opts the process in to TCC checks rather
+    than bypassing them.
+  - Input injection via CGEvent requires the process to be listed in the
+    Accessibility privacy list — granted silently via the MDM PPPC profile.
+  - ONNX Runtime uses platform-native execution providers (CoreML,
+    CPU fallback).  disable-library-validation must remain false unless a
+    specific third-party provider that Apple has not signed is required.
+-->
+<plist version="1.0">
+<dict>
+
+    <!-- ── Network (required for LBTP/UDP and signaling WebSocket) ── -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <!--
+      ── Screen capture (ScreenCaptureKit) ──────────────────────────
+      Opts the process in to the TCC ScreenCapture category.
+      User (or MDM PPPC) must grant consent; this entitlement alone
+      does not bypass the TCC prompt.
+    -->
+    <key>com.apple.security.device.screen-capture</key>
+    <true/>
+
+    <!-- ── Microphone (48 kHz capture for Opus encode) ─────────────── -->
+    <key>com.apple.security.device.microphone</key>
+    <true/>
+
+    <!-- ── Camera (Gear A/B talking-head capture) ──────────────────── -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
+
+    <!--
+      ── Hardened Runtime exceptions ────────────────────────────────
+      JIT disabled: no JIT needed in the daemon.
+      Library validation: keep enabled (false = validation stays on)
+      so only Apple-signed or same-team-signed dylibs load.
+      ONNX Runtime's CoreML EP is Apple-signed; CPU EP is pure Rust.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <false/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <false/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <false/>
+
+    <!--
+      ── File access ────────────────────────────────────────────────
+      The daemon reads from /Library/Application Support/LowBand.
+      No broad filesystem entitlement is requested; the postinstall
+      script gives _lowband ownership of that directory.
+    -->
+
+</dict>
+</plist>
