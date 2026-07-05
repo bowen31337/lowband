@@ -11,6 +11,7 @@ description = "LowBand file-transfer plugin — CDC dedup, zstd, RaptorQ fountai
 # requires a C compiler for zstd's native library.
 [features]
 default = []
+fec = ["dep:raptorq"]
 full = [
     "dep:blake3",
     "dep:fastcdc",

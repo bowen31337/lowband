@@ -27,7 +27,7 @@ pub mod scheduler;
 pub mod chunker;
 #[cfg(feature = "full")]
 pub mod compress;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "fec"))]
 pub mod fec;
 
 pub use cache::{ChunkCache, InMemoryChunkCache};
@@ -38,7 +38,7 @@ pub use scheduler::{BulkTransferScheduler, PacerDemand, TickResult, XferFrame};
 pub use chunker::{chunk_data, FileChunk};
 #[cfg(feature = "full")]
 pub use compress::{CompressionMode, XferCompressor};
-#[cfg(feature = "full")]
-pub use fec::{FecDecoder, FecEncoder};
+#[cfg(any(feature = "full", feature = "fec"))]
+pub use fec::{FecDecoder, FecEncoder, RepairSender};
 #[cfg(feature = "full")]
 pub use hash::compute_id;
