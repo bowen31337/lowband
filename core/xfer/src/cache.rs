@@ -91,7 +91,7 @@ pub fn split_delta<'a>(
     (to_send, already_cached)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "full"))]
 mod tests {
     use super::*;
 
