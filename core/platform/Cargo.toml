@@ -1,0 +1,9 @@
+[package]
+name = "lowband-platform"
+version = "0.1.0"
+edition = "2021"
+description = "LowBand platform integration — thermal pressure monitoring and gear degradation policy"
+
+# No external dependencies: macOS uses sysctlbyname (libSystem, always linked),
+# Linux uses std::fs over sysfs, Windows uses GetSystemPowerStatus (kernel32).
+[dependencies]
