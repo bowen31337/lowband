@@ -4,6 +4,7 @@
 //!
 //! | # | Feature |
 //! |---|---------|
+//! | 16 | adaptive Reed-Solomon FEC via Gilbert-Elliott burst model |
 //! | 17 | channel_priority pacer — input beats media in every queue |
 //!
 //! # Channel map
@@ -26,6 +27,11 @@
 //! Input frames (channel 3) always beat media frames (channels 1, 4, 5) at
 //! every dequeue decision, regardless of arrival order or frame size.
 
+pub mod fec;
 pub mod pacer;
 
+pub use fec::{
+    GilbertElliottEstimator, GilbertElliottParams, MAX_FEC_RATIO, MIN_FEC_RATIO,
+    MIN_OBS_FOR_ESTIMATE,
+};
 pub use pacer::{ChannelId, Pacer, PacerFrame, PRIORITY_ORDER};
