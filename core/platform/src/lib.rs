@@ -1,10 +1,20 @@
-//! LowBand platform integration crate.
+//! LowBand platform integration (`lowband-platform`).
 //!
-//! Implements Feature 161 of the LowBand architecture spec:
+//! | Feature | Description |
+//! |---------|-------------|
+//! | 160 | CPU ceiling: caps a constrained-tier session to 35% on a 2015-class laptop |
+//! | 161 | Thermal gear degradation: degrades encoder gears with thermal_pressure, never drops voice |
 //!
-//! > System degrades gears gracefully with thermal_pressure and never drops voice.
+//! ## Feature 160 — CPU ceiling
 //!
-//! # Overview
+//! The primary export is [`CpuCeiling`], a cooperative throttle that
+//! work-loop owners call each tick.  When the session is in
+//! [`TierState::Constrained`] and measured CPU exceeds
+//! [`CONSTRAINED_CPU_CEILING_PCT`] (35%), [`CpuCeiling::throttle`] returns a
+//! sleep duration that, when obeyed, keeps the rolling average at or below the
+//! limit.
+//!
+//! ## Feature 161 — Thermal gear degradation
 //!
 //! The governor reads [`ThermalPressure`] at each 10 Hz tick via
 //! [`ThermalMonitor::sample`] and calls [`GearConstraints::from_thermal`] to
@@ -13,16 +23,23 @@
 //!
 //! The invariant enforced here is absolute: the voice stream receives at least
 //! [`gear_policy::AUDIO_FLOOR_BPS`] (6 kbps) at every thermal level and at
-//! every network bandwidth.  Camera gears are shed first; the neural Gear A
-//! is the first to go, followed by SVT-AV1 at progressively faster (lower
-//! quality, lower CPU) presets, and finally camera is disabled entirely at
-//! the Critical level.  Screen refinement passes are suspended under Serious
-//! or Critical pressure but the coarse lane continues so text remains legible.
+//! every network bandwidth.
 
+pub mod cpu_ceiling;
 pub mod gear_policy;
 pub mod thermal;
+pub mod tier;
 
+pub use cpu_ceiling::{CpuCeiling, ThrottleAction};
 pub use gear_policy::{
     allocate, CameraGear, GearConstraints, StreamBudgets, AUDIO_FLOOR_BPS,
 };
 pub use thermal::{ThermalMonitor, ThermalPressure};
+pub use tier::TierState;
+
+/// CPU ceiling percentage applied at the Constrained tier (Feature 160).
+///
+/// Baseline: 2015-class dual-core laptop (e.g. Core i5-5200U, 2 cores /
+/// 4 threads, ~2.7 GHz boost).  35% total-CPU headroom is sufficient for
+/// voice + screen + input while leaving the machine usable for other tasks.
+pub const CONSTRAINED_CPU_CEILING_PCT: f64 = 35.0;

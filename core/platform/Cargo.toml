@@ -2,8 +2,14 @@
 name = "lowband-platform"
 version = "0.1.0"
 edition = "2021"
-description = "LowBand platform integration — thermal pressure monitoring and gear degradation policy"
+description = "LowBand platform integration — CPU ceiling, tier state, thermal pressure monitoring and gear degradation policy"
 
 # No external dependencies: macOS uses sysctlbyname (libSystem, always linked),
 # Linux uses std::fs over sysfs, Windows uses GetSystemPowerStatus (kernel32).
 [dependencies]
+
+[dev-dependencies]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+
+[target.'cfg(target_os = "macos")'.dependencies]
