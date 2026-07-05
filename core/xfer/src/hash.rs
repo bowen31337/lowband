@@ -11,12 +11,13 @@ pub type ChunkId = [u8; 32];
 ///
 /// This is the only correct way to produce a `ChunkId` — all code that
 /// generates IDs for insertion into the chunk cache must call this function.
+#[cfg(feature = "full")]
 #[inline]
 pub fn compute_id(data: &[u8]) -> ChunkId {
     *blake3::hash(data).as_bytes()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "full"))]
 mod tests {
     use super::*;
 

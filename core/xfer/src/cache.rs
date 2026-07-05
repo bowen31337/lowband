@@ -94,10 +94,14 @@ pub fn split_delta<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hash::compute_id;
 
     fn id(data: &[u8]) -> ChunkId {
-        compute_id(data)
+        let mut out = [0u8; 32];
+        for (i, &b) in data.iter().enumerate() {
+            out[i % 32] ^= b;
+            out[(i + 1) % 32] = out[(i + 1) % 32].wrapping_add(b);
+        }
+        out
     }
 
     #[test]
