@@ -179,6 +179,7 @@ PRODUCTBUILD_ARGS=(
 
 if signing_available; then
     PRODUCTBUILD_ARGS+=(--sign "$SIGN_PKG_IDENTITY" --timestamp)
+    mkdir -p "$(dirname "$OUTPUT_PKG")"
     productbuild "${PRODUCTBUILD_ARGS[@]}" "$OUTPUT_PKG"
     log "Signed distribution package: $OUTPUT_PKG"
 else

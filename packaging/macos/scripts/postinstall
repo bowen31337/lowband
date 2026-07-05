@@ -9,7 +9,6 @@ DAEMON_BIN="/usr/local/bin/lowbandd"
 DATA_DIR="/Library/Application Support/LowBand"
 LOG_DIR="/var/log/lowband"
 DAEMON_USER="_lowband"
-DAEMON_GROUP="_lowband"
 
 # ── Create least-privilege system account ────────────────────────────────────
 # The daemon runs as _lowband (UID < 500, shell=/usr/bin/false, home=/var/empty).
