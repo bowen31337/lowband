@@ -14,19 +14,28 @@
 //! channel 7 until the receiver ACKs the complete object.  The receiver uses
 //! [`FecDecoder`] to accumulate symbols and recover the original data.
 
-use thiserror::Error;
-
 /// Maximum symbol payload size (bytes).  Must fit inside one LBTP datagram
 /// after framing overhead (11-byte public envelope + ~6-byte frame header).
 pub const SYMBOL_SIZE: u16 = 1_180;
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum FecError {
-    #[error("object too large for single source block")]
     ObjectTooLarge,
-    #[error("decoding failed: insufficient symbols received")]
     InsufficientSymbols,
 }
+
+impl std::fmt::Display for FecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FecError::ObjectTooLarge => f.write_str("object too large for single source block"),
+            FecError::InsufficientSymbols => {
+                f.write_str("decoding failed: insufficient symbols received")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FecError {}
 
 /// Encodes one chunk into a set of source symbols plus on-demand repair symbols.
 ///

@@ -20,15 +20,25 @@
 //! voice (channel 1) or input (channel 3), even by one packet.
 
 pub mod cache;
-pub mod chunker;
-pub mod compress;
-pub mod fec;
 pub mod hash;
 pub mod scheduler;
 
+#[cfg(feature = "full")]
+pub mod chunker;
+#[cfg(feature = "full")]
+pub mod compress;
+#[cfg(feature = "full")]
+pub mod fec;
+
 pub use cache::{ChunkCache, InMemoryChunkCache};
-pub use chunker::{chunk_data, FileChunk};
-pub use compress::{CompressionMode, XferCompressor};
-pub use fec::{FecDecoder, FecEncoder};
-pub use hash::{ChunkId, compute_id};
+pub use hash::ChunkId;
 pub use scheduler::{BulkTransferScheduler, PacerDemand, TickResult, XferFrame};
+
+#[cfg(feature = "full")]
+pub use chunker::{chunk_data, FileChunk};
+#[cfg(feature = "full")]
+pub use compress::{CompressionMode, XferCompressor};
+#[cfg(feature = "full")]
+pub use fec::{FecDecoder, FecEncoder};
+#[cfg(feature = "full")]
+pub use hash::compute_id;
