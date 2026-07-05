@@ -1,0 +1,29 @@
+[package]
+name = "lowband-xfer"
+version = "0.1.0"
+edition = "2021"
+description = "LowBand file-transfer plugin — CDC dedup, zstd, RaptorQ fountain codes, bulk-transfer pacer"
+
+# ── Features ──────────────────────────────────────────────────────────────────
+#
+# Default build: scheduler + cache only — no C build scripts, fast CI.
+# `full` activates the codec stack (blake3, fastcdc, zstd, raptorq) which
+# requires a C compiler for zstd's native library.
+[features]
+default = []
+full = [
+    "dep:blake3",
+    "dep:fastcdc",
+    "dep:raptorq",
+    "dep:zstd",
+]
+
+[dependencies]
+# Codec/transport deps — activated by the `full` feature only.
+blake3   = { version = "1",    optional = true }
+fastcdc  = { version = "3",    optional = true }
+raptorq  = { version = "2",    optional = true }
+zstd     = { version = "0.13", optional = true }
+
+# Error handling — always needed (no build script, no C).
+thiserror = "1"
