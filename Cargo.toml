@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core/xfer", "core/platform"]
+members = ["core/lbtp", "core/xfer", "core/platform"]
 
 [workspace.package]
 version = "0.1.0"

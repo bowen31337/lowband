@@ -1,0 +1,7 @@
+[package]
+name = "lowband-lbtp"
+version = "0.1.0"
+edition = "2021"
+description = "LowBand Transport Protocol — pacing, congestion control, framing, and channel multiplexing"
+
+[dependencies]
