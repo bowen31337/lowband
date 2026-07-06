@@ -7,6 +7,7 @@ description = "LowBand platform integration — CPU ceiling, tier state, thermal
 # No external dependencies: macOS uses sysctlbyname (libSystem, always linked),
 # Linux uses std::fs over sysfs, Windows uses GetSystemPowerStatus (kernel32).
 [dependencies]
+flatbuffers = "24"
 
 [dev-dependencies]
 

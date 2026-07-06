@@ -27,6 +27,7 @@
 
 pub mod cpu_ceiling;
 pub mod gear_policy;
+pub mod ipc;
 pub mod thermal;
 pub mod tier;
 

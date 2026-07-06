@@ -1,0 +1,63 @@
+// LowBand IPC schema — contract between lowbandd and UI shells.
+//
+// Wire framing (applied outside the FlatBuffer layer):
+//   [4 bytes LE u32: body_len][1 byte: kind][body_len-1 bytes: FlatBuffer table]
+//
+// kind values: 0 = TierUpdate, 1 = StreamBudget, 2 = GearUpdate
+
+namespace lowband.ipc;
+
+// ── Enumerations ─────────────────────────────────────────────────────────────
+
+/// Quality tier of the current session (mirrors TierState in core/platform).
+enum Tier : uint8 {
+    Survival    = 0,   // voice only, all optional features shed
+    Constrained = 1,   // voice + legible screen + responsive input
+    Comfortable = 2,   // all features at reduced fidelity
+    Full        = 3,   // all features at maximum fidelity
+}
+
+/// Thermal pressure level (mirrors ThermalPressure in core/platform).
+enum ThermalLevel : uint8 {
+    Nominal  = 0,
+    Fair     = 1,
+    Serious  = 2,
+    Critical = 3,
+}
+
+/// Camera gear in use.
+enum CameraGearKind : uint8 {
+    GearA = 0,   // neural talking-head codec
+    GearB = 1,   // SVT-AV1
+    Off   = 2,   // camera disabled
+}
+
+// ── Message tables ────────────────────────────────────────────────────────────
+
+/// kind = 0 — emitted whenever tier, CPU load, or thermal level changes.
+table TierUpdate {
+    tier:        Tier;          // current quality tier
+    cpu_percent: float;         // rolling CPU utilisation (0–100)
+    thermal:     ThermalLevel;  // current thermal pressure
+}
+
+/// kind = 1 — emitted at each 10 Hz governor tick with the current bandwidth
+/// split and network measurements.  The UI shell uses this for the quality bar.
+table StreamBudget {
+    audio_bps:             uint32;  // audio encoder target (always ≥ 6 000)
+    input_bps:             uint32;  // input/cursor channel
+    screen_coarse_bps:     uint32;  // screen coarse lane
+    camera_bps:            uint32;  // camera (0 when gear = Off)
+    screen_refinement_bps: uint32;  // build-to-lossless pass (0 when suspended)
+    xfer_bps:              uint32;  // file transfer headroom
+    rtt_ms:                uint32;  // measured round-trip time (ms)
+    loss_pct:              float;   // packet loss percentage (0.0–100.0)
+}
+
+/// kind = 2 — emitted when thermal constraints change encoder gear.
+table GearUpdate {
+    camera_gear:               CameraGearKind;  // current camera gear
+    svt_preset:                uint8;           // SVT-AV1 preset (10–12; 0 when not GearB)
+    screen_refinement_allowed: bool;            // false when thermally suspended
+    thermal:                   ThermalLevel;    // level that drove this change
+}
