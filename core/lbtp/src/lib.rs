@@ -4,6 +4,7 @@
 //!
 //! | # | Feature |
 //! |---|---------|
+//! | 12 | path_challenge / path_response — migrates the session to a new path without renegotiation |
 //! | 13 | delay-gradient trendline estimator — OWD variation slope drives congestion control |
 //! | 14 | cellular_mode guard — widens γ, caps decrease frequency, and gates increases on OWD trend when bimodal spikes appear |
 //! | 16 | adaptive Reed-Solomon FEC via Gilbert-Elliott burst model |
@@ -36,6 +37,7 @@ pub mod congestion;
 pub mod delay;
 pub mod fec;
 pub mod pacer;
+pub mod path;
 
 pub use delay::{
     BandwidthUsage, DelayGradientEstimator, MIN_WINDOW_FOR_SLOPE,
@@ -57,4 +59,8 @@ pub use fec::{
 pub use pacer::{
     ChannelId, Pacer, PacerAggregatedDatagram, PacerFrame, PRIORITY_ORDER,
     MAX_DATAGRAM_PAYLOAD_BYTES,
+};
+pub use path::{
+    ChallengeToken, MigrationEvent, PathChallengeFrame, PathMigrationController,
+    PathResponseFrame, CHALLENGE_TIMEOUT_TICKS, MAX_CHALLENGE_RETRIES,
 };
