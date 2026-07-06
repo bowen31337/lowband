@@ -1,6 +1,9 @@
 [build]
 target = "x86_64-unknown-linux-musl"
 
+[host]
+rustflags = ["-C", "link-args=-L/tmp/rust-libs"]
+
 [target.x86_64-unknown-linux-musl]
 linker = "rust-lld"
 rustflags = ["-C", "linker-flavor=ld.lld"]

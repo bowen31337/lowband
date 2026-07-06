@@ -37,8 +37,36 @@ pub use scheduler::{BulkTransferScheduler, PacerDemand, TickResult, XferFrame};
 #[cfg(feature = "full")]
 pub use chunker::{chunk_data, FileChunk};
 #[cfg(feature = "full")]
-pub use compress::{CompressionMode, XferCompressor};
+pub use compress::{CompressionMode, DictionaryClass, XferCompressor};
 #[cfg(any(feature = "full", feature = "fec"))]
 pub use fec::{FecDecoder, FecEncoder, RepairSender};
 #[cfg(feature = "full")]
 pub use hash::compute_id;
+
+// Feature 108 — validate the committed pre-trained dictionary artifacts.
+// These tests require no C deps and run in all feature configurations.
+#[cfg(test)]
+mod dict_tests {
+    const ZSTD_DICT_MAGIC: [u8; 4] = [0x37, 0xa4, 0x30, 0xec]; // 0xEC30A437 stored LE
+
+    #[test]
+    fn dict_logs_is_valid_zstd_dict() {
+        let b = include_bytes!("dicts/dict_logs.bin");
+        assert!(b.len() >= 8, "dict_logs.bin too small ({} bytes)", b.len());
+        assert!(b.starts_with(&ZSTD_DICT_MAGIC), "dict_logs.bin: bad magic");
+    }
+
+    #[test]
+    fn dict_registry_is_valid_zstd_dict() {
+        let b = include_bytes!("dicts/dict_registry.bin");
+        assert!(b.len() >= 8, "dict_registry.bin too small ({} bytes)", b.len());
+        assert!(b.starts_with(&ZSTD_DICT_MAGIC), "dict_registry.bin: bad magic");
+    }
+
+    #[test]
+    fn dict_config_is_valid_zstd_dict() {
+        let b = include_bytes!("dicts/dict_config.bin");
+        assert!(b.len() >= 8, "dict_config.bin too small ({} bytes)", b.len());
+        assert!(b.starts_with(&ZSTD_DICT_MAGIC), "dict_config.bin: bad magic");
+    }
+}

@@ -1,0 +1,7 @@
+#!/bin/bash
+REAL_LLD="/home/ubuntu/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld"
+if [[ "${1:-}" == "-flavor" && "${2:-}" == "gnu" ]]; then
+    exec "$REAL_LLD" -flavor gnu -L/tmp/rust-libs "${@:3}"
+else
+    exec "$REAL_LLD" "$@"
+fi
