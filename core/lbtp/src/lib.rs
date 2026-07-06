@@ -7,6 +7,7 @@
 //! | 16 | adaptive Reed-Solomon FEC via Gilbert-Elliott burst model |
 //! | 17 | channel_priority pacer — input beats media in every queue |
 //! | 19 | per-tick frame coalescing — concurrent frames from all channels into one aggregated_datagram |
+//! | 20 | loss backstop — multiplicative send_rate reduction when sustained loss > 10 % |
 //!
 //! # Channel map
 //!
@@ -28,9 +29,14 @@
 //! Input frames (channel 3) always beat media frames (channels 1, 4, 5) at
 //! every dequeue decision, regardless of arrival order or frame size.
 
+pub mod congestion;
 pub mod fec;
 pub mod pacer;
 
+pub use congestion::{
+    LossBackstop, BACKSTOP_COOLDOWN_TICKS, BACKSTOP_MIN_RATE_BPS, LOSS_BACKSTOP_REDUCTION,
+    LOSS_BACKSTOP_THRESHOLD,
+};
 pub use fec::{
     GilbertElliottEstimator, GilbertElliottParams, MAX_FEC_RATIO, MIN_FEC_RATIO,
     MIN_OBS_FOR_ESTIMATE,
