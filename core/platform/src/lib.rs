@@ -29,6 +29,7 @@
 pub mod cpu_ceiling;
 pub mod elevation;
 pub mod gear_policy;
+pub mod input_injection;
 pub mod ipc;
 pub mod thermal;
 pub mod tier;
@@ -38,6 +39,7 @@ pub use cpu_ceiling::{CpuCeiling, ThrottleAction};
 pub use elevation::{ElevationKind, ElevationOutcome, ElevationRequest, EscalationReason};
 #[cfg(target_os = "windows")]
 pub use elevation::WinElevationBridge;
+pub use input_injection::{InputBroker, InputEvent, InjectionError, MouseButton};
 pub use gear_policy::{
     allocate, CameraGear, GearConstraints, StreamBudgets, AUDIO_FLOOR_BPS,
 };
