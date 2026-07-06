@@ -4,6 +4,7 @@
 //!
 //! | # | Feature |
 //! |---|---------|
+//! | 14 | cellular_mode guard — widens γ, caps decrease frequency, and gates increases on OWD trend when bimodal spikes appear |
 //! | 16 | adaptive Reed-Solomon FEC via Gilbert-Elliott burst model |
 //! | 17 | channel_priority pacer — input beats media in every queue |
 //! | 19 | per-tick frame coalescing — concurrent frames from all channels into one aggregated_datagram |
@@ -29,10 +30,16 @@
 //! Input frames (channel 3) always beat media frames (channels 1, 4, 5) at
 //! every dequeue decision, regardless of arrival order or frame size.
 
+pub mod cellular;
 pub mod congestion;
 pub mod fec;
 pub mod pacer;
 
+pub use cellular::{
+    BimodalDetector, CellularModeController, CELLULAR_ENTRY_TICKS, CELLULAR_EXIT_TICKS,
+    CELLULAR_GAMMA_MULTIPLIER, CELLULAR_MIN_DECREASE_TICKS, MIN_BIMODAL_FRACTION,
+    MAX_BIMODAL_FRACTION, MIN_BIMODAL_SPREAD_US, OWD_WINDOW_SIZE, SPIKE_THRESHOLD_FACTOR,
+};
 pub use congestion::{
     LossBackstop, BACKSTOP_COOLDOWN_TICKS, BACKSTOP_MIN_RATE_BPS, LOSS_BACKSTOP_REDUCTION,
     LOSS_BACKSTOP_THRESHOLD,
