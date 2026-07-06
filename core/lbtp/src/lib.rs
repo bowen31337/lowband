@@ -4,6 +4,7 @@
 //!
 //! | # | Feature |
 //! |---|---------|
+//! | 13 | delay-gradient trendline estimator — OWD variation slope drives congestion control |
 //! | 14 | cellular_mode guard — widens γ, caps decrease frequency, and gates increases on OWD trend when bimodal spikes appear |
 //! | 16 | adaptive Reed-Solomon FEC via Gilbert-Elliott burst model |
 //! | 17 | channel_priority pacer — input beats media in every queue |
@@ -32,9 +33,14 @@
 
 pub mod cellular;
 pub mod congestion;
+pub mod delay;
 pub mod fec;
 pub mod pacer;
 
+pub use delay::{
+    BandwidthUsage, DelayGradientEstimator, MIN_WINDOW_FOR_SLOPE,
+    OVERUSE_THRESHOLD_GAMMA_US_PER_MS, TRENDLINE_SMOOTHING_ALPHA, TRENDLINE_WINDOW_SIZE,
+};
 pub use cellular::{
     BimodalDetector, CellularModeController, CELLULAR_ENTRY_TICKS, CELLULAR_EXIT_TICKS,
     CELLULAR_GAMMA_MULTIPLIER, CELLULAR_MIN_DECREASE_TICKS, MIN_BIMODAL_FRACTION,
