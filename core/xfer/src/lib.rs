@@ -21,6 +21,7 @@
 
 pub mod cache;
 pub mod hash;
+pub mod persistent_cache;
 pub mod scheduler;
 
 #[cfg(feature = "full")]
@@ -33,6 +34,7 @@ pub mod fec;
 pub use cache::{
     confirm_delivered, split_delta, ChunkCache, InMemoryChunkCache, TransferManifest,
 };
+pub use persistent_cache::PersistentChunkCache;
 pub use hash::ChunkId;
 pub use scheduler::{
     AggregatedDatagram, BulkTransferScheduler, PacerDemand, TickResult, XferFrame,
