@@ -1,0 +1,33 @@
+[Unit]
+Description=LowBand core daemon
+Documentation=https://lowband.io/docs
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/lowbandd \
+    --ipc-socket /tmp/lowband.sock \
+    --data-dir /var/lib/lowband \
+    --drop-privs-to _lowband
+
+# The binary starts as root (needed to bind the socket), then drops to
+# _lowband via --drop-privs-to before the governor loop begins.  After the
+# drop no new privileges can be acquired.
+User=root
+Restart=on-failure
+RestartSec=10s
+
+# Hardening — mirrors the macOS LaunchDaemon restrictions.
+NoNewPrivileges=yes
+PrivateTmp=no
+ProtectSystem=strict
+ReadWritePaths=/tmp /var/lib/lowband /var/log/lowband
+ProtectHome=yes
+RestrictNamespaces=yes
+LimitNOFILE=256
+
+StandardOutput=append:/var/log/lowband/lowbandd.log
+StandardError=append:/var/log/lowband/lowbandd-error.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[package]
+name = "lowbandd"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "LowBand core daemon — least-privilege system service, separate from the UI shell"
+
+[[bin]]
+name = "lowbandd"
+path = "src/main.rs"
+
+[dependencies]
+lowband-platform = { path = "../platform" }
