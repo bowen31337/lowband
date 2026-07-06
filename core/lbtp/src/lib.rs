@@ -6,6 +6,7 @@
 //! |---|---------|
 //! | 16 | adaptive Reed-Solomon FEC via Gilbert-Elliott burst model |
 //! | 17 | channel_priority pacer — input beats media in every queue |
+//! | 19 | per-tick frame coalescing — concurrent frames from all channels into one aggregated_datagram |
 //!
 //! # Channel map
 //!
@@ -34,4 +35,7 @@ pub use fec::{
     GilbertElliottEstimator, GilbertElliottParams, MAX_FEC_RATIO, MIN_FEC_RATIO,
     MIN_OBS_FOR_ESTIMATE,
 };
-pub use pacer::{ChannelId, Pacer, PacerFrame, PRIORITY_ORDER};
+pub use pacer::{
+    ChannelId, Pacer, PacerAggregatedDatagram, PacerFrame, PRIORITY_ORDER,
+    MAX_DATAGRAM_PAYLOAD_BYTES,
+};

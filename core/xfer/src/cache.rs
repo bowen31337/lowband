@@ -95,25 +95,22 @@ pub fn split_delta<'a>(
 mod tests {
     use super::*;
 
-    fn id(data: &[u8]) -> ChunkId {
-        let mut out = [0u8; 32];
-        for (i, &b) in data.iter().enumerate() {
-            out[i % 32] ^= b;
-            out[(i + 1) % 32] = out[(i + 1) % 32].wrapping_add(b);
-        }
-        out
+    fn id(byte: u8) -> ChunkId {
+        let mut arr = [0u8; 32];
+        arr[0] = byte;
+        arr
     }
 
     #[test]
     fn empty_cache_misses_everything() {
         let cache = InMemoryChunkCache::new();
-        assert!(!cache.contains(&id(b"chunk1")));
+        assert!(!cache.contains(&id(1)));
     }
 
     #[test]
     fn insert_then_contains() {
         let mut cache = InMemoryChunkCache::new();
-        let cid = id(b"payload");
+        let cid = id(2);
         cache.insert(cid);
         assert!(cache.contains(&cid));
     }
@@ -121,7 +118,7 @@ mod tests {
     #[test]
     fn remove_clears_entry() {
         let mut cache = InMemoryChunkCache::new();
-        let cid = id(b"removeme");
+        let cid = id(3);
         cache.insert(cid);
         cache.remove(&cid);
         assert!(!cache.contains(&cid));
@@ -130,7 +127,7 @@ mod tests {
     #[test]
     fn split_delta_new_chunks_go_to_send() {
         let cache = InMemoryChunkCache::new();
-        let ids = [id(b"a"), id(b"b"), id(b"c")];
+        let ids = [id(10), id(11), id(12)];
 
         let (to_send, cached) = split_delta(ids.iter(), &cache);
         assert_eq!(to_send.len(), 3);
@@ -140,8 +137,8 @@ mod tests {
     #[test]
     fn split_delta_known_chunks_elided() {
         let mut cache = InMemoryChunkCache::new();
-        let known = id(b"known");
-        let fresh = id(b"fresh");
+        let known = id(20);
+        let fresh = id(21);
         cache.insert(known);
 
         let ids = [known, fresh];
@@ -154,7 +151,7 @@ mod tests {
     #[test]
     fn split_delta_all_cached_sends_nothing() {
         let mut cache = InMemoryChunkCache::new();
-        let ids: Vec<ChunkId> = (0u8..5).map(|i| id(&[i])).collect();
+        let ids: Vec<ChunkId> = (0u8..5).map(id).collect();
         for cid in &ids {
             cache.insert(*cid);
         }

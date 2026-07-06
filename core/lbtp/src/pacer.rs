@@ -26,6 +26,13 @@
 //! [`Pacer::dequeue`] returns `None` either when all queues are empty or when
 //! the token balance is insufficient for the front frame of every non-empty
 //! priority queue.
+//!
+//! # Per-tick frame coalescing (Feature 19)
+//!
+//! [`Pacer::drain_tick`] collects all frames that the token budget allows in a
+//! single pacing tick — across every channel, in [`PRIORITY_ORDER`] — into one
+//! [`PacerAggregatedDatagram`].  Packing N frames into one UDP datagram pays
+//! the 19-byte LBTP envelope + AEAD overhead once instead of N times.
 
 use std::collections::VecDeque;
 
@@ -38,6 +45,18 @@ pub const NUM_CHANNELS: usize = 9;
 /// send rate this is ≈ 94 bytes — roughly one audio frame — keeping
 /// self-induced queuing well below 5 ms on any path.
 const BURST_TOLERANCE_MS: f64 = 5.0;
+
+/// Per-datagram overhead: 3-byte LBTP envelope (short form) + 16-byte AEAD tag.
+const DATAGRAM_OVERHEAD: usize = 19;
+
+/// Per-frame overhead within an aggregated datagram: 1-byte channel/type tag +
+/// 1-byte varint length (sufficient for payloads ≤ 127 B; we budget 2 bytes
+/// as a conservative approximation matching the architecture spec example).
+const FRAME_HEADER_OVERHEAD: usize = 2;
+
+/// Maximum bytes available for frame payloads (sum of per-frame headers +
+/// their data) in a single LBTP datagram.
+pub const MAX_DATAGRAM_PAYLOAD_BYTES: usize = 1200 - DATAGRAM_OVERHEAD;
 
 /// Canonical send-priority order for LBTP channels.
 ///
@@ -82,6 +101,25 @@ impl PacerFrame {
             data.len()
         );
         Self { channel, data }
+    }
+}
+
+/// All frames dequeued from the pacer in a single pacing tick, coalesced into
+/// one logical LBTP datagram to amortise the 19-byte envelope + AEAD overhead.
+///
+/// The lbtp framer packs every frame's raw payload into one UDP datagram,
+/// paying the overhead once rather than once per frame (LBTP Feature 19).
+/// Frames are ordered by [`PRIORITY_ORDER`]; FIFO within each channel.
+#[derive(Debug)]
+pub struct PacerAggregatedDatagram {
+    /// Frames in priority order; always non-empty.
+    pub frames: Vec<PacerFrame>,
+}
+
+impl PacerAggregatedDatagram {
+    /// Sum of raw payload bytes across all frames (excludes per-frame LBTP headers).
+    pub fn data_bytes(&self) -> usize {
+        self.frames.iter().map(|f| f.data.len()).sum()
     }
 }
 
@@ -204,6 +242,67 @@ impl Pacer {
             }
         }
         None
+    }
+
+    /// Drain all frames eligible in the current pacing tick into one aggregated datagram.
+    ///
+    /// Scans channels repeatedly in [`PRIORITY_ORDER`], admitting the front frame
+    /// of the highest-priority non-empty channel on each pass, subject to:
+    ///
+    /// - **Token budget**: each frame's byte count is deducted from `token_bytes`.
+    ///   A frame is skipped (not the whole drain) if there are insufficient tokens.
+    /// - **Datagram MTU**: frames are packed until the next would push the running
+    ///   slot total (sum of `FRAME_HEADER_OVERHEAD + data.len()` per frame) past
+    ///   [`MAX_DATAGRAM_PAYLOAD_BYTES`].  The first frame is always admitted
+    ///   regardless of size (best-effort for near-MTU frames, matching the
+    ///   xfer-scheduler convention).
+    ///
+    /// Returns `None` when all queues are empty or no frame fits in the token budget.
+    ///
+    /// ## Ordering guarantee
+    ///
+    /// Frames appear in the returned `Vec` in descending priority order; FIFO is
+    /// preserved within each channel.  A lower-priority channel's frame may appear
+    /// in the same datagram as a higher-priority one whenever the higher-priority
+    /// channel's next frame would exceed the remaining datagram capacity.
+    pub fn drain_tick(&mut self) -> Option<PacerAggregatedDatagram> {
+        let mut frames: Vec<PacerFrame> = Vec::new();
+        let mut datagram_used: usize = 0;
+
+        loop {
+            let mut admitted = false;
+            for &ch in &PRIORITY_ORDER {
+                let queue = &mut self.queues[ch as usize];
+                let Some(front) = queue.front() else { continue };
+
+                let token_needed = front.data.len() as f64;
+                if self.token_bytes < token_needed {
+                    continue; // insufficient tokens; try lower-priority channels
+                }
+
+                let slot = FRAME_HEADER_OVERHEAD + front.data.len();
+                // First frame always admitted (best-effort for near-MTU).
+                // Subsequent frames must fit within the datagram payload budget.
+                if !frames.is_empty() && datagram_used + slot > MAX_DATAGRAM_PAYLOAD_BYTES {
+                    continue; // doesn't fit; try lower-priority channels
+                }
+
+                self.token_bytes -= token_needed;
+                datagram_used += slot;
+                frames.push(queue.pop_front().unwrap());
+                admitted = true;
+                break; // restart from highest priority
+            }
+            if !admitted {
+                break;
+            }
+        }
+
+        if frames.is_empty() {
+            None
+        } else {
+            Some(PacerAggregatedDatagram { frames })
+        }
     }
 
     /// Number of frames currently queued on the given channel.
@@ -522,5 +621,177 @@ mod tests {
         p.enqueue(frame(CH_INPUT, 10));
         p.enqueue(frame(CH_XFER, 10));
         assert_eq!(p.total_queued_frames(), 3);
+    }
+
+    // ── Feature 19: drain_tick coalescing ────────────────────────────────
+
+    #[test]
+    fn drain_tick_returns_none_when_empty() {
+        let mut p = pacer_with_tokens(10_000);
+        assert!(p.drain_tick().is_none(), "empty pacer must return None");
+    }
+
+    #[test]
+    fn drain_tick_returns_none_with_no_tokens() {
+        let mut p = Pacer::new(150_000.0); // tokens start at 0
+        p.enqueue(frame(CH_AUDIO, 80));
+        assert!(p.drain_tick().is_none(), "no tokens → no frames admitted");
+        assert_eq!(p.total_queued_frames(), 1, "frame must remain enqueued");
+    }
+
+    #[test]
+    fn drain_tick_single_frame() {
+        let mut p = pacer_with_tokens(10_000);
+        p.enqueue(frame(CH_INPUT, 32));
+
+        let agg = p.drain_tick().expect("should return aggregated datagram");
+        assert_eq!(agg.frames.len(), 1);
+        assert_eq!(agg.frames[0].channel.0, 3);
+        assert_eq!(agg.data_bytes(), 32);
+        assert_eq!(p.total_queued_frames(), 0);
+    }
+
+    #[test]
+    fn drain_tick_coalesces_same_channel_multiple_frames() {
+        // Three 100-B frames from audio: 3 × (2 + 100) = 306 B ≤ MAX_DATAGRAM_PAYLOAD_BYTES.
+        // All should be coalesced into one datagram.
+        let mut p = pacer_with_tokens(10_000);
+        for _ in 0u8..3 {
+            p.enqueue(frame(CH_AUDIO, 100));
+        }
+
+        let agg = p.drain_tick().expect("should aggregate");
+        assert_eq!(agg.frames.len(), 3, "all three audio frames must coalesce");
+        assert_eq!(agg.data_bytes(), 300);
+        assert_eq!(p.total_queued_frames(), 0);
+    }
+
+    #[test]
+    fn drain_tick_coalesces_across_channels_in_priority_order() {
+        // ctrl (ch 0) + input (ch 3) + audio (ch 1) — all small, all fit.
+        // Expected order in result: ctrl(0) → input(3) → audio(1).
+        let mut p = pacer_with_tokens(10_000);
+        p.enqueue(frame(CH_AUDIO, 20));
+        p.enqueue(frame(CH_INPUT, 20));
+        p.enqueue(frame(CH_CTRL, 20));
+
+        let agg = p.drain_tick().expect("should aggregate");
+        assert_eq!(agg.frames.len(), 3);
+        assert_eq!(agg.frames[0].channel.0, 0, "ctrl must be first");
+        assert_eq!(agg.frames[1].channel.0, 3, "input must be second");
+        assert_eq!(agg.frames[2].channel.0, 1, "audio must be third");
+        assert_eq!(p.total_queued_frames(), 0);
+    }
+
+    #[test]
+    fn drain_tick_stops_at_mtu() {
+        // 590-B frames: slot = 592 B. Two slots = 1 184 B > MAX_DATAGRAM_PAYLOAD_BYTES (1 181).
+        // First frame admitted unconditionally; second frame must not fit.
+        let mut p = pacer_with_tokens(10_000);
+        p.enqueue(frame(CH_AUDIO, 590));
+        p.enqueue(frame(CH_AUDIO, 590));
+
+        let agg = p.drain_tick().expect("should aggregate");
+        assert_eq!(agg.frames.len(), 1, "second frame must be deferred — datagram full");
+        assert_eq!(p.total_queued_frames(), 1, "one frame left in queue");
+    }
+
+    #[test]
+    fn drain_tick_stops_when_token_budget_exhausted() {
+        // Grant exactly enough tokens for one 80-B frame; a second frame must not be sent.
+        let mut p = Pacer::new(150_000.0);
+        // 80 bytes at 150 kbps: 80 / (150_000 / 8_000_000_000) ns = 4_266_667 ns
+        p.advance(4_300_000);
+        p.enqueue(frame(CH_AUDIO, 80));
+        p.enqueue(frame(CH_AUDIO, 80));
+
+        let agg = p.drain_tick().expect("should send one frame");
+        assert_eq!(agg.frames.len(), 1, "only one frame fits in token budget");
+        assert_eq!(p.total_queued_frames(), 1, "second frame remains queued");
+    }
+
+    #[test]
+    fn drain_tick_lower_priority_fills_remaining_datagram_space() {
+        // ctrl frame = 590 B (slot 592); audio frame = 589 B (slot 591).
+        // Total: 592 + 591 = 1 183 B > MAX_DATAGRAM_PAYLOAD_BYTES (1 181) — audio doesn't fit.
+        // Substitute smaller audio: 500 B (slot 502). 592 + 502 = 1 094 ≤ 1 181 → both fit.
+        let mut p = pacer_with_tokens(10_000);
+        p.enqueue(frame(CH_CTRL, 590));
+        p.enqueue(frame(CH_AUDIO, 500));
+
+        let agg = p.drain_tick().expect("should aggregate");
+        assert_eq!(agg.frames.len(), 2, "ctrl + audio must both coalesce");
+        assert_eq!(agg.frames[0].channel.0, 0, "ctrl first");
+        assert_eq!(agg.frames[1].channel.0, 1, "audio second");
+        assert_eq!(p.total_queued_frames(), 0);
+    }
+
+    #[test]
+    fn drain_tick_skips_channel_insufficient_tokens_admits_smaller() {
+        // Tokens enough for only a 10-B frame.
+        // Ch 3 (input) has an 80-B frame — too big.
+        // Ch 1 (audio) has a 10-B frame — fits.
+        // drain_tick must admit the audio frame even though input is higher priority.
+        let mut p = Pacer::new(150_000.0);
+        // 10 bytes: 10 / (150_000 / 8_000_000_000) = 533_333 ns
+        p.advance(600_000);
+        p.enqueue(frame(CH_INPUT, 80));
+        p.enqueue(frame(CH_AUDIO, 10));
+
+        let agg = p.drain_tick().expect("audio frame should be admitted");
+        assert_eq!(agg.frames.len(), 1);
+        assert_eq!(agg.frames[0].channel.0, 1, "audio admitted when input lacks tokens");
+        assert_eq!(p.total_queued_frames(), 1, "input frame still queued");
+    }
+
+    #[test]
+    fn drain_tick_deducts_tokens_for_each_admitted_frame() {
+        let mut p = pacer_with_tokens(10_000);
+        let before = p.token_bytes();
+        p.enqueue(frame(CH_CTRL, 100));
+        p.enqueue(frame(CH_AUDIO, 200));
+
+        p.drain_tick().unwrap();
+
+        let after = p.token_bytes();
+        assert!(
+            (before - after - 300.0).abs() < 0.01,
+            "tokens must decrease by total payload bytes (100 + 200 = 300)"
+        );
+    }
+
+    #[test]
+    fn drain_tick_fifo_within_channel() {
+        let mut p = pacer_with_tokens(10_000);
+        for i in 0u8..4 {
+            p.enqueue(PacerFrame::new(CH_AUDIO, vec![i; 10]));
+        }
+
+        let agg = p.drain_tick().expect("all frames fit");
+        assert_eq!(agg.frames.len(), 4);
+        for (i, f) in agg.frames.iter().enumerate() {
+            assert_eq!(f.data[0], i as u8, "FIFO order must be preserved within a channel");
+        }
+    }
+
+    #[test]
+    fn drain_tick_all_channels_coalesced_in_priority_order() {
+        // One frame per channel, all tiny, all fit in one datagram.
+        // Result must follow PRIORITY_ORDER exactly.
+        let mut p = pacer_with_tokens(100_000);
+        for &ch in PRIORITY_ORDER.iter().rev() {
+            p.enqueue(frame(ChannelId(ch), 10));
+        }
+
+        let agg = p.drain_tick().expect("all 9 channels fit");
+        assert_eq!(agg.frames.len(), NUM_CHANNELS);
+        for (i, f) in agg.frames.iter().enumerate() {
+            assert_eq!(
+                f.channel.0, PRIORITY_ORDER[i],
+                "frame {} must come from channel {} (PRIORITY_ORDER)",
+                i, PRIORITY_ORDER[i]
+            );
+        }
+        assert_eq!(p.total_queued_frames(), 0);
     }
 }

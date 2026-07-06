@@ -1,4 +1,4 @@
-//! Bulk-transfer pacing scheduler — Features 110 & 111.
+//! Bulk-transfer pacing scheduler — Features 110, 111, and frame coalescing (LBTP Feature 18).
 //!
 //! # The absolute rule
 //!
@@ -19,8 +19,23 @@
 //!    headroom for this control interval, returns
 //!    [`TickResult::HeldForHeadroom`].
 //!
-//! Only when both gates are clear does the scheduler dequeue the front
-//! [`XferFrame`] and hand it to the framer.
+//! Only when both gates are clear does the scheduler coalesce as many queued
+//! [`XferFrame`]s as will fit in one LBTP datagram and returns them as
+//! [`TickResult::SendAggregated`].
+//!
+//! # Frame coalescing (LBTP Feature 18)
+//!
+//! Each LBTP datagram pays a fixed overhead of ~19 bytes (3-byte envelope in
+//! short form + 16-byte AEAD tag).  Sending N xfer frames as N separate
+//! datagrams multiplies that tax by N.  Instead, `tick` packs every frame that
+//! fits within [`MAX_DATAGRAM_XFER_BYTES`] into a single [`AggregatedDatagram`],
+//! paying the overhead once.  Each frame within the datagram costs an
+//! additional 2-byte LBTP frame header (1-byte channel/type + 1-byte varint
+//! length for payloads ≤ 127 B, 2-byte for larger — we budget 2 bytes as a
+//! conservative approximation that matches the architecture spec example).
+//!
+//! A single near-MTU frame that cannot share a datagram is still admitted
+//! alone; coalescing is best-effort.
 //!
 //! # Headroom accounting
 //!
@@ -31,6 +46,13 @@
 //! of truth on what the link can carry).
 
 use std::collections::VecDeque;
+
+/// Per-datagram overhead: 3-byte LBTP envelope (short form) + 16-byte AEAD tag.
+const DATAGRAM_OVERHEAD: usize = 19;
+/// Per-frame overhead within a datagram: 1-byte channel/type + 1-byte varint length.
+const FRAME_HEADER_OVERHEAD: usize = 2;
+/// Maximum bytes available for xfer frame payloads in a single LBTP datagram.
+pub const MAX_DATAGRAM_XFER_BYTES: usize = 1200 - DATAGRAM_OVERHEAD;
 
 /// Per-channel pending byte counts as seen by the lbtp pacer.
 ///
@@ -81,11 +103,29 @@ impl XferFrame {
     }
 }
 
+/// Multiple [`XferFrame`]s coalesced into a single LBTP datagram payload.
+///
+/// The lbtp framer packs every frame in this aggregate into one UDP datagram,
+/// paying the 19-byte IP/UDP/AEAD-tag overhead once rather than once per frame
+/// (LBTP Feature 18).
+#[derive(Debug)]
+pub struct AggregatedDatagram {
+    /// Frames in FIFO transmission order; always non-empty.
+    pub frames: Vec<XferFrame>,
+}
+
+impl AggregatedDatagram {
+    /// Sum of payload bytes across all frames (excludes per-frame LBTP headers).
+    pub fn data_bytes(&self) -> usize {
+        self.frames.iter().map(|f| f.data.len()).sum()
+    }
+}
+
 /// Outcome of a single scheduler tick.
 #[derive(Debug)]
 pub enum TickResult {
-    /// A frame is ready; hand its bytes to the lbtp framer on channel 7.
-    Send(XferFrame),
+    /// One or more xfer frames coalesced into one datagram; hand to the lbtp framer on channel 7.
+    SendAggregated(AggregatedDatagram),
     /// Held — voice or input bytes are pending in the pacer (Feature 111).
     HeldForPriority,
     /// Held — the governor headroom budget is exhausted (Feature 110).
@@ -143,15 +183,16 @@ impl BulkTransferScheduler {
 
     /// Scheduling tick — called by the transport event loop.
     ///
-    /// Implements the two-gate pacing logic:
+    /// Implements the two-gate pacing logic, then coalesces (LBTP Feature 18):
     ///
     /// 1. **Priority gate** (Feature 111): returns [`TickResult::HeldForPriority`]
     ///    while `demand.blocks_bulk()` is true.
     /// 2. **Headroom gate** (Feature 110): returns [`TickResult::HeldForHeadroom`]
     ///    when the budget is zero or the front frame exceeds remaining budget.
-    ///
-    /// On success, pops the front frame, deducts its byte count from
-    /// `headroom_remaining`, and returns [`TickResult::Send`].
+    /// 3. **Coalescing**: greedily packs queued frames into one
+    ///    [`AggregatedDatagram`] until the next frame would overflow
+    ///    [`MAX_DATAGRAM_XFER_BYTES`] or exhaust `headroom_remaining`.
+    ///    A single oversized frame is always admitted alone.
     pub fn tick(&mut self, demand: PacerDemand) -> TickResult {
         // Gate 1 — Feature 111: absolute priority hold.
         if demand.blocks_bulk() {
@@ -163,18 +204,42 @@ impl BulkTransferScheduler {
             return TickResult::HeldForHeadroom;
         }
 
+        // Short-circuit if the queue is empty or the front frame exceeds headroom.
         match self.queue.front() {
-            None => TickResult::Idle,
+            None => return TickResult::Idle,
             Some(frame) if frame.data.len() > self.headroom_remaining => {
-                // Front frame exceeds remaining budget; wait for next interval.
-                TickResult::HeldForHeadroom
+                return TickResult::HeldForHeadroom;
             }
-            Some(_) => {
-                let frame = self.queue.pop_front().unwrap();
-                self.headroom_remaining -= frame.data.len();
-                TickResult::Send(frame)
-            }
+            _ => {}
         }
+
+        // Coalesce: pack as many frames as fit into one datagram.
+        let mut frames = Vec::new();
+        let mut datagram_used: usize = 0;
+        let mut headroom_used: usize = 0;
+
+        loop {
+            let Some(next) = self.queue.front() else { break };
+            let slot = FRAME_HEADER_OVERHEAD + next.data.len();
+
+            // Always admit the first frame (best-effort for near-MTU frames);
+            // for subsequent frames, stop if the datagram would overflow.
+            if !frames.is_empty() && datagram_used + slot > MAX_DATAGRAM_XFER_BYTES {
+                break;
+            }
+            // Stop if adding this frame would exceed the remaining headroom budget.
+            if headroom_used + next.data.len() > self.headroom_remaining {
+                break;
+            }
+
+            let frame = self.queue.pop_front().unwrap();
+            datagram_used += slot;
+            headroom_used += frame.data.len();
+            frames.push(frame);
+        }
+
+        self.headroom_remaining -= headroom_used;
+        TickResult::SendAggregated(AggregatedDatagram { frames })
     }
 }
 
@@ -315,11 +380,12 @@ mod tests {
         s.enqueue(make_frame(500));
 
         match s.tick(no_demand()) {
-            TickResult::Send(f) => {
-                assert_eq!(f.data.len(), 500);
-                assert_eq!(f.object_id, 1);
+            TickResult::SendAggregated(agg) => {
+                assert_eq!(agg.frames.len(), 1);
+                assert_eq!(agg.frames[0].data.len(), 500);
+                assert_eq!(agg.frames[0].object_id, 1);
             }
-            other => panic!("expected Send, got {:?}", other),
+            other => panic!("expected SendAggregated, got {:?}", other),
         }
         assert_eq!(s.queued_frames(), 0);
         assert_eq!(s.headroom_remaining(), 9_500);
@@ -327,6 +393,8 @@ mod tests {
 
     #[test]
     fn headroom_decrements_correctly_across_multiple_sends() {
+        // 900-B frames: slot = 902 B; two slots = 1 804 B > MAX_DATAGRAM_XFER_BYTES (1 181).
+        // Each tick therefore emits exactly one frame in its own datagram.
         let mut s = BulkTransferScheduler::new();
         s.set_headroom(3_000);
 
@@ -334,18 +402,15 @@ mod tests {
             s.enqueue(XferFrame::new(vec![i as u8; 900], 42, i as u32));
         }
 
-        // First two sends fit within 3 000 bytes.
-        assert!(matches!(s.tick(no_demand()), TickResult::Send(_)));
+        assert!(matches!(s.tick(no_demand()), TickResult::SendAggregated(_)));
         assert_eq!(s.headroom_remaining(), 2_100);
 
-        assert!(matches!(s.tick(no_demand()), TickResult::Send(_)));
+        assert!(matches!(s.tick(no_demand()), TickResult::SendAggregated(_)));
         assert_eq!(s.headroom_remaining(), 1_200);
 
-        // Third send (900 B) fits — headroom 1 200.
-        assert!(matches!(s.tick(no_demand()), TickResult::Send(_)));
+        assert!(matches!(s.tick(no_demand()), TickResult::SendAggregated(_)));
         assert_eq!(s.headroom_remaining(), 300);
 
-        // Queue is now empty.
         assert!(matches!(s.tick(no_demand()), TickResult::Idle));
     }
 
@@ -368,11 +433,8 @@ mod tests {
         s.set_headroom(10_000);
         s.enqueue(make_frame(600));
 
-        // Voice is pending — held.
         assert!(matches!(s.tick(voice_demand(1200)), TickResult::HeldForPriority));
-
-        // Voice drains — now the frame can go.
-        assert!(matches!(s.tick(no_demand()), TickResult::Send(_)));
+        assert!(matches!(s.tick(no_demand()), TickResult::SendAggregated(_)));
     }
 
     #[test]
@@ -382,7 +444,7 @@ mod tests {
         s.enqueue(make_frame(300));
 
         assert!(matches!(s.tick(input_demand(32)), TickResult::HeldForPriority));
-        assert!(matches!(s.tick(no_demand()), TickResult::Send(_)));
+        assert!(matches!(s.tick(no_demand()), TickResult::SendAggregated(_)));
     }
 
     // ── Invariant: bulk never consumes headroom while held ─────────────────
@@ -404,6 +466,8 @@ mod tests {
 
     #[test]
     fn frames_sent_in_fifo_order() {
+        // Four 100-B frames: 4 × (2 + 100) = 408 B ≤ MAX_DATAGRAM_XFER_BYTES (1 181).
+        // All coalesce into one datagram; FIFO order must be preserved within it.
         let mut s = BulkTransferScheduler::new();
         s.set_headroom(10_000);
 
@@ -411,11 +475,117 @@ mod tests {
             s.enqueue(XferFrame::new(vec![esi as u8; 100], 99, esi));
         }
 
-        for expected_esi in 0u32..4 {
-            match s.tick(no_demand()) {
-                TickResult::Send(f) => assert_eq!(f.esi, expected_esi),
-                other => panic!("expected Send, got {:?}", other),
+        match s.tick(no_demand()) {
+            TickResult::SendAggregated(agg) => {
+                assert_eq!(agg.frames.len(), 4);
+                for (i, f) in agg.frames.iter().enumerate() {
+                    assert_eq!(f.esi, i as u32, "FIFO order within aggregated datagram");
+                }
             }
+            other => panic!("expected SendAggregated, got {:?}", other),
+        }
+        assert!(matches!(s.tick(no_demand()), TickResult::Idle));
+    }
+
+    // ── Frame coalescing (LBTP Feature 18) ───────────────────────────────
+
+    #[test]
+    fn coalesces_small_frames_into_one_datagram() {
+        // Three 200-B frames: 3 × 202 = 606 B ≤ 1 181. All fit in one datagram.
+        let mut s = BulkTransferScheduler::new();
+        s.set_headroom(10_000);
+        for esi in 0u32..3 {
+            s.enqueue(XferFrame::new(vec![esi as u8; 200], 1, esi));
+        }
+
+        match s.tick(no_demand()) {
+            TickResult::SendAggregated(agg) => {
+                assert_eq!(agg.frames.len(), 3, "all three frames coalesced");
+                assert_eq!(agg.data_bytes(), 600);
+                for (i, f) in agg.frames.iter().enumerate() {
+                    assert_eq!(f.esi, i as u32, "FIFO order preserved");
+                }
+            }
+            other => panic!("expected SendAggregated, got {:?}", other),
+        }
+        assert_eq!(s.queued_frames(), 0);
+    }
+
+    #[test]
+    fn coalescing_stops_at_datagram_capacity() {
+        // 500-B frames: slot = 502 B. Two fit (1 004 B ≤ 1 181); three do not (1 506 B).
+        let mut s = BulkTransferScheduler::new();
+        s.set_headroom(10_000);
+        for esi in 0u32..3 {
+            s.enqueue(XferFrame::new(vec![0u8; 500], 1, esi));
+        }
+
+        match s.tick(no_demand()) {
+            TickResult::SendAggregated(agg) => {
+                assert_eq!(agg.frames.len(), 2, "datagram capacity limits coalescing to 2 frames");
+            }
+            other => panic!("expected SendAggregated, got {:?}", other),
+        }
+        assert_eq!(s.queued_frames(), 1, "third frame deferred to next tick");
+        assert_eq!(s.headroom_remaining(), 9_000);
+    }
+
+    #[test]
+    fn coalescing_respects_headroom() {
+        // Three 400-B frames; headroom = 900 B. First two (800 B total) fit; third (1 200 B) exceeds.
+        let mut s = BulkTransferScheduler::new();
+        s.set_headroom(900);
+        for esi in 0u32..3 {
+            s.enqueue(XferFrame::new(vec![0u8; 400], 1, esi));
+        }
+
+        match s.tick(no_demand()) {
+            TickResult::SendAggregated(agg) => {
+                assert_eq!(agg.frames.len(), 2, "headroom caps coalescing at 2 frames");
+                assert_eq!(agg.data_bytes(), 800);
+            }
+            other => panic!("expected SendAggregated, got {:?}", other),
+        }
+        assert_eq!(s.headroom_remaining(), 100);
+        assert_eq!(s.queued_frames(), 1, "third frame waits for next interval");
+    }
+
+    #[test]
+    fn single_large_frame_sent_alone() {
+        // A near-MTU frame (1 100 B): slot = 1 102 B > MAX_DATAGRAM_XFER_BYTES (1 181)?
+        // Actually 1 102 ≤ 1 181 — fine. Use a frame that fills the datagram so nothing else fits.
+        // 580-B frames: one slot = 582; two slots = 1 164 ≤ 1 181.
+        // Use 590-B frames: one slot = 592; two slots = 1 184 > 1 181 — only one fits.
+        let mut s = BulkTransferScheduler::new();
+        s.set_headroom(10_000);
+        s.enqueue(XferFrame::new(vec![0u8; 590], 1, 0));
+        s.enqueue(XferFrame::new(vec![1u8; 590], 1, 1));
+
+        match s.tick(no_demand()) {
+            TickResult::SendAggregated(agg) => {
+                assert_eq!(agg.frames.len(), 1, "only one 590-B frame fits per datagram");
+            }
+            other => panic!("expected SendAggregated, got {:?}", other),
+        }
+        assert_eq!(s.queued_frames(), 1);
+        // Second frame goes in the next datagram.
+        assert!(matches!(s.tick(no_demand()), TickResult::SendAggregated(_)));
+        assert_eq!(s.queued_frames(), 0);
+    }
+
+    #[test]
+    fn aggregated_datagram_data_bytes_sums_all_frames() {
+        let mut s = BulkTransferScheduler::new();
+        s.set_headroom(10_000);
+        s.enqueue(XferFrame::new(vec![0u8; 100], 1, 0));
+        s.enqueue(XferFrame::new(vec![0u8; 200], 1, 1));
+        s.enqueue(XferFrame::new(vec![0u8; 50], 1, 2));
+
+        match s.tick(no_demand()) {
+            TickResult::SendAggregated(agg) => {
+                assert_eq!(agg.data_bytes(), 350);
+            }
+            other => panic!("expected SendAggregated, got {:?}", other),
         }
     }
 }

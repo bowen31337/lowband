@@ -32,7 +32,10 @@ pub mod fec;
 
 pub use cache::{ChunkCache, InMemoryChunkCache};
 pub use hash::ChunkId;
-pub use scheduler::{BulkTransferScheduler, PacerDemand, TickResult, XferFrame};
+pub use scheduler::{
+    AggregatedDatagram, BulkTransferScheduler, PacerDemand, TickResult, XferFrame,
+    MAX_DATAGRAM_XFER_BYTES,
+};
 
 #[cfg(feature = "full")]
 pub use chunker::{chunk_data, FileChunk};
