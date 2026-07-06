@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+
+<!--
+  LowBand daemon Polkit policy — Feature 155.
+
+  This file defines the two privileged actions that the LowBand installer
+  and package scripts may request via Polkit.  Both require explicit
+  administrator authentication (auth_admin / auth_admin_keep); there are no
+  implicit or "yes" grants.
+
+  Install path:
+    /usr/share/polkit-1/actions/org.lowband.daemon.policy
+
+  The running daemon (_lowband account, post drop_privileges) never triggers
+  a Polkit action.  These actions are only invoked by the installer.
+-->
+
+<policyconfig>
+
+  <vendor>LowBand Project</vendor>
+  <vendor_url>https://lowband.example</vendor_url>
+  <icon_name>network-wireless</icon_name>
+
+  <!-- ── Install action ──────────────────────────────────────────────────── -->
+  <action id="org.lowband.daemon.install">
+    <description>Install the LowBand daemon service</description>
+    <message>Authentication is required to install the LowBand daemon.
+This will create the _lowband system account and register a systemd service.</message>
+    <icon_name>system-software-install</icon_name>
+
+    <defaults>
+      <!-- Never granted without authentication, even to a local active session. -->
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+
+    <!-- No annotate_action: no helper binary, no SUID path. -->
+  </action>
+
+  <!-- ── Configure action ───────────────────────────────────────────────── -->
+  <action id="org.lowband.daemon.configure">
+    <description>Write LowBand daemon configuration</description>
+    <message>Authentication is required to change the LowBand daemon configuration.
+This will write to /etc/lowband/.</message>
+    <icon_name>preferences-system</icon_name>
+
+    <defaults>
+      <!-- Prompts once per session (auth_admin_keep), not once-and-forever. -->
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+</policyconfig>
