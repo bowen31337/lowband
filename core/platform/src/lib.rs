@@ -32,9 +32,12 @@ pub mod gear_policy;
 pub mod ipc;
 pub mod thermal;
 pub mod tier;
+pub mod uac;
 
 pub use cpu_ceiling::{CpuCeiling, ThrottleAction};
 pub use elevation::{ElevationKind, ElevationOutcome, ElevationRequest, EscalationReason};
+#[cfg(target_os = "windows")]
+pub use elevation::WinElevationBridge;
 pub use gear_policy::{
     allocate, CameraGear, GearConstraints, StreamBudgets, AUDIO_FLOOR_BPS,
 };

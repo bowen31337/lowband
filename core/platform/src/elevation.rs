@@ -40,6 +40,84 @@
 
 use std::fmt;
 
+#[cfg(target_os = "windows")]
+use std::sync::{mpsc, Mutex, OnceLock};
+
+// ── Windows elevation bridge ──────────────────────────────────────────────────
+
+/// Process-wide elevation channel, registered once by the daemon at startup.
+///
+/// On Windows the daemon never calls UAC APIs directly.  Instead it sends
+/// the escalation reason to the UI shell via IPC, the shell raises the UAC
+/// prompt on the Secure Desktop, and the outcome is returned over the same
+/// IPC socket.  [`WinElevationBridge`] is the internal channel that connects
+/// [`platform_execute`] (blocking) to the IPC bridge thread that does the
+/// actual forwarding.
+#[cfg(target_os = "windows")]
+static WIN_ELEV_BRIDGE: OnceLock<WinElevationBridge> = OnceLock::new();
+
+/// Channel pair that decouples `platform_execute` from the IPC layer.
+///
+/// # Setup (daemon startup)
+///
+/// ```no_run
+/// # #[cfg(target_os = "windows")] {
+/// use lowband_platform::elevation::WinElevationBridge;
+/// use lowband_platform::ipc::{IpcServer, IpcEvent};
+/// use lowband_platform::elevation::{ElevationOutcome, EscalationReason};
+/// use std::path::Path;
+///
+/// let (bridge, req_rx, resp_tx) = WinElevationBridge::new();
+/// bridge.register();
+///
+/// // Spawn the IPC bridge thread.  It reads elevation reasons forwarded by
+/// // platform_execute and broadcasts them to the UI shell; it also reads
+/// // ElevationResponse events from the shell and dispatches the outcome.
+/// let server = IpcServer::bind(Path::new("unused-on-windows")).unwrap();
+/// std::thread::spawn(move || {
+///     for reason in req_rx.iter() {
+///         server.broadcast(&IpcEvent::ElevationRequested { reason });
+///         if let Ok(IpcEvent::ElevationResponse { outcome, .. }) =
+///             server.inbound().recv()
+///         {
+///             resp_tx.send(outcome).ok();
+///         }
+///     }
+/// });
+/// # }
+/// ```
+#[cfg(target_os = "windows")]
+pub struct WinElevationBridge {
+    req_tx: mpsc::SyncSender<EscalationReason>,
+    resp_rx: Mutex<mpsc::Receiver<ElevationOutcome>>,
+}
+
+#[cfg(target_os = "windows")]
+impl WinElevationBridge {
+    /// Create a bridge and the matching channel ends for the IPC bridge thread.
+    ///
+    /// - `req_rx` — the bridge thread reads escalation reasons from here and
+    ///   forwards them as [`crate::ipc::IpcEvent::ElevationRequested`].
+    /// - `resp_tx` — the bridge thread writes outcomes received as
+    ///   [`crate::ipc::IpcEvent::ElevationResponse`] from the shell into this.
+    pub fn new() -> (
+        Self,
+        mpsc::Receiver<EscalationReason>,
+        mpsc::SyncSender<ElevationOutcome>,
+    ) {
+        let (req_tx, req_rx) = mpsc::sync_channel(1);
+        let (resp_tx, resp_rx) = mpsc::sync_channel(1);
+        (WinElevationBridge { req_tx, resp_rx: Mutex::new(resp_rx) }, req_rx, resp_tx)
+    }
+
+    /// Register this bridge as the process-wide Windows elevation channel.
+    ///
+    /// Silently no-ops if called more than once; the first registration wins.
+    pub fn register(self) {
+        WIN_ELEV_BRIDGE.set(self).ok();
+    }
+}
+
 // ── Reason ────────────────────────────────────────────────────────────────────
 
 /// Why a privilege escalation is being requested.
@@ -233,33 +311,34 @@ fn platform_kind() -> ElevationKind { ElevationKind::LinuxPolkit }
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 fn platform_kind() -> ElevationKind { ElevationKind::DaemonDrop }
 
-/// Invoke the platform OS prompt and return the raw outcome.
+/// Windows: route the elevation request through the IPC bridge to the UI shell.
 ///
-/// ## Windows implementation note
+/// Sends the reason to the IPC bridge thread (which broadcasts it as
+/// [`crate::ipc::IpcEvent::ElevationRequested`] to the connected UI shell),
+/// then blocks until the shell returns [`crate::ipc::IpcEvent::ElevationResponse`].
 ///
-/// The daemon never calls UAC APIs directly.  When `ScreenCapture` or
-/// `InputInjection` is needed by the UI shell, the shell calls
-/// `ShellExecuteEx(hwnd, "runas", ...)` or the COM elevation moniker.  This
-/// stub returns `Unavailable` on non-Windows targets; the real call lives in
-/// the `capture` and `inject` modules once those are built (Features 152–153).
+/// Returns [`ElevationOutcome::Unavailable`] if the bridge has not been
+/// registered (e.g. in headless or CI contexts) or if the IPC channel closes.
+/// Never retries silently on denial.
+#[cfg(target_os = "windows")]
+fn platform_execute(reason: EscalationReason, _kind: ElevationKind) -> ElevationOutcome {
+    let bridge = match WIN_ELEV_BRIDGE.get() {
+        Some(b) => b,
+        None => return ElevationOutcome::Unavailable,
+    };
+    if bridge.req_tx.send(reason).is_err() {
+        return ElevationOutcome::Unavailable;
+    }
+    bridge.resp_rx.lock().unwrap().recv().unwrap_or(ElevationOutcome::Unavailable)
+}
+
+/// Non-Windows: returns `Unavailable` so the contract is exercisable in CI.
 ///
-/// ## macOS implementation note
-///
-/// `CGRequestScreenCaptureAccess()` and `AXIsProcessTrustedWithOptions` are
-/// the correct APIs.  Both present the TCC prompt on first call.  Subsequent
-/// calls return immediately from the TCC cache — not a silent escalation.
-///
-/// ## Linux implementation note
-///
-/// At runtime the daemon holds only `_lowband` rights; no Polkit call is made
-/// from the running process.  The PipeWire portal (`xdg-desktop-portal`)
-/// handles screen-cast / remote-desktop auth via DBus without requiring root.
-/// Polkit is only invoked by the system installer for the `ServiceInstall`
-/// reason.
+/// Real macOS (`CGRequestScreenCaptureAccess`, `AXIsProcessTrustedWithOptions`)
+/// and Linux (PipeWire portal / Polkit) implementations are added when the
+/// capture and inject modules are built (Features 152–153).
+#[cfg(not(target_os = "windows"))]
 fn platform_execute(_reason: EscalationReason, _kind: ElevationKind) -> ElevationOutcome {
-    // Stub: returns Unavailable so the contract is exercisable in CI without
-    // live OS APIs.  Real platform implementations replace this body behind
-    // #[cfg(target_os = "...")] guards in the capture/inject modules.
     ElevationOutcome::Unavailable
 }
 
