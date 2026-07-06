@@ -65,6 +65,30 @@ impl ChunkCache for InMemoryChunkCache {
     }
 }
 
+/// Ordered sequence of [`ChunkId`]s that describes a complete file payload.
+///
+/// The manifest is always transmitted to the remote peer so it can reconstruct
+/// the file's chunk ordering.  Data for chunks the peer already holds is
+/// omitted from the wire transfer (Feature 105 — delta transfer).
+#[derive(Debug, Clone)]
+pub struct TransferManifest {
+    /// Chunk IDs in file order.
+    pub chunk_ids: Vec<ChunkId>,
+    /// Total uncompressed byte count of the source file.
+    pub total_bytes: usize,
+}
+
+impl TransferManifest {
+    pub fn new(chunk_ids: Vec<ChunkId>, total_bytes: usize) -> Self {
+        Self { chunk_ids, total_bytes }
+    }
+
+    /// Number of chunks in this manifest.
+    pub fn chunk_count(&self) -> usize {
+        self.chunk_ids.len()
+    }
+}
+
 /// Decide which chunks from `chunks` need to be transmitted.
 ///
 /// Returns a pair of vecs:
@@ -91,7 +115,17 @@ pub fn split_delta<'a>(
     (to_send, already_cached)
 }
 
-#[cfg(all(test, feature = "full"))]
+/// Mark each chunk in `ids` as successfully delivered to the remote peer.
+///
+/// Call this after the receiver ACKs an object.  Inserts every ID into
+/// `cache` so subsequent transfers of the same payload skip these chunks.
+pub fn confirm_delivered(cache: &mut dyn ChunkCache, ids: &[ChunkId]) {
+    for id in ids {
+        cache.insert(*id);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -159,5 +193,77 @@ mod tests {
         let (to_send, cached) = split_delta(ids.iter(), &cache);
         assert!(to_send.is_empty());
         assert_eq!(cached.len(), 5);
+    }
+
+    // ── TransferManifest ─────────────────────────────────────────────────
+
+    #[test]
+    fn manifest_chunk_count_matches_ids() {
+        let ids: Vec<ChunkId> = (0u8..4).map(id).collect();
+        let m = TransferManifest::new(ids.clone(), 128 * 1024);
+        assert_eq!(m.chunk_count(), 4);
+        assert_eq!(m.total_bytes, 128 * 1024);
+        assert_eq!(m.chunk_ids, ids);
+    }
+
+    #[test]
+    fn empty_manifest_has_zero_count() {
+        let m = TransferManifest::new(vec![], 0);
+        assert_eq!(m.chunk_count(), 0);
+        assert_eq!(m.total_bytes, 0);
+    }
+
+    // ── confirm_delivered ────────────────────────────────────────────────
+
+    #[test]
+    fn confirm_delivered_inserts_all_ids() {
+        let mut cache = InMemoryChunkCache::new();
+        let ids: Vec<ChunkId> = (10u8..15).map(id).collect();
+
+        confirm_delivered(&mut cache, &ids);
+
+        for cid in &ids {
+            assert!(cache.contains(cid), "chunk {cid:?} should be in cache after delivery");
+        }
+        assert_eq!(cache.len(), 5);
+    }
+
+    #[test]
+    fn confirm_delivered_empty_slice_is_noop() {
+        let mut cache = InMemoryChunkCache::new();
+        confirm_delivered(&mut cache, &[]);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn second_transfer_sends_nothing_after_confirm_delivered() {
+        // First transfer: all chunks are new.
+        let mut cache = InMemoryChunkCache::new();
+        let ids: Vec<ChunkId> = (0u8..6).map(id).collect();
+
+        let (to_send, cached) = split_delta(ids.iter(), &cache);
+        assert_eq!(to_send.len(), 6);
+        assert!(cached.is_empty());
+
+        // Simulate delivery confirmation.
+        confirm_delivered(&mut cache, &to_send);
+
+        // Second transfer of the same payload: nothing new to send.
+        let (to_send2, cached2) = split_delta(ids.iter(), &cache);
+        assert!(to_send2.is_empty(), "all chunks cached after delivery");
+        assert_eq!(cached2.len(), 6);
+    }
+
+    #[test]
+    fn partial_delivery_sends_only_remaining_chunks() {
+        let mut cache = InMemoryChunkCache::new();
+        let all_ids: Vec<ChunkId> = (0u8..5).map(id).collect();
+
+        // Deliver only the first three chunks.
+        confirm_delivered(&mut cache, &all_ids[..3]);
+
+        let (to_send, cached) = split_delta(all_ids.iter(), &cache);
+        assert_eq!(cached.len(), 3);
+        assert_eq!(to_send, vec![all_ids[3], all_ids[4]]);
     }
 }

@@ -30,7 +30,9 @@ pub mod compress;
 #[cfg(any(feature = "full", feature = "fec"))]
 pub mod fec;
 
-pub use cache::{ChunkCache, InMemoryChunkCache};
+pub use cache::{
+    confirm_delivered, split_delta, ChunkCache, InMemoryChunkCache, TransferManifest,
+};
 pub use hash::ChunkId;
 pub use scheduler::{
     AggregatedDatagram, BulkTransferScheduler, PacerDemand, TickResult, XferFrame,
