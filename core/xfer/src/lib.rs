@@ -40,7 +40,12 @@ pub use scheduler::{
 #[cfg(feature = "full")]
 pub use chunker::{chunk_data, FileChunk};
 #[cfg(feature = "full")]
-pub use compress::{CompressionMode, DictionaryClass, XferCompressor};
+pub use compress::{
+    compress_chunks, CompressedChunk, CompressError, CompressionMode, DictionaryClass,
+    XferCompressor,
+};
+#[cfg(feature = "full")]
+pub use compress::decompress as decompress_chunk;
 #[cfg(any(feature = "full", feature = "fec"))]
 pub use fec::{FecDecoder, FecEncoder, RepairSender};
 #[cfg(feature = "full")]

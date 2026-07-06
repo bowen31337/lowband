@@ -122,6 +122,52 @@ impl XferCompressor {
     pub fn mode(&self) -> CompressionMode {
         self.mode
     }
+
+    /// Compress a single [`FileChunk`] and return a [`CompressedChunk`] (Feature 106).
+    ///
+    /// Convenience wrapper over [`compress`](Self::compress) that preserves the chunk's
+    /// identity and offset so callers need not unpack the struct manually.
+    #[cfg(feature = "full")]
+    pub fn compress_chunk(
+        &self,
+        chunk: &crate::chunker::FileChunk,
+    ) -> Result<CompressedChunk, CompressError> {
+        let compressed = self.compress(&chunk.data)?;
+        Ok(CompressedChunk { id: chunk.id, offset: chunk.offset, compressed })
+    }
+}
+
+/// A [`crate::chunker::FileChunk`] whose payload has been zstd-compressed (Feature 106).
+///
+/// `id` and `offset` are preserved from the original chunk so that the
+/// deduplication cache and reassembly logic can operate on compressed output
+/// without a second lookup.
+#[cfg(feature = "full")]
+#[derive(Debug, Clone)]
+pub struct CompressedChunk {
+    /// BLAKE3 identity hash of the **original** (uncompressed) data.
+    pub id: crate::hash::ChunkId,
+    /// Byte offset of this chunk within the source file.
+    pub offset: usize,
+    /// Zstd-compressed payload ready for FEC encoding or on-wire transmission.
+    pub compressed: Vec<u8>,
+}
+
+/// Compress all `chunks` in one pass, returning a `CompressedChunk` per input (Feature 106).
+///
+/// Call with `CompressionMode::Foreground` (level 3) when the user is waiting on
+/// the transfer, and `CompressionMode::Background` (level 19) for async bulk work.
+/// The compressor is reused across chunks so dictionary loading is paid only once.
+///
+/// # Errors
+/// Returns the first [`CompressError`] encountered; successfully compressed chunks
+/// produced before the error are discarded.
+#[cfg(feature = "full")]
+pub fn compress_chunks(
+    chunks: &[crate::chunker::FileChunk],
+    compressor: &XferCompressor,
+) -> Result<Vec<CompressedChunk>, CompressError> {
+    chunks.iter().map(|c| compressor.compress_chunk(c)).collect()
 }
 
 /// Decompress a chunk that was compressed by [`XferCompressor`].
@@ -255,6 +301,48 @@ mod tests {
             dict_len <= plain_len,
             "dictionary should not inflate output: dict={dict_len} plain={plain_len}"
         );
+    }
+
+    #[cfg(feature = "full")]
+    #[test]
+    fn compress_chunk_foreground_roundtrip() {
+        use crate::chunker::chunk_data;
+
+        let source: Vec<u8> = b"log line: INFO transfer started chunk_id=aabbccdd\n"
+            .iter()
+            .copied()
+            .cycle()
+            .take(64 * 1024)
+            .collect();
+        let chunks = chunk_data(&source);
+        assert!(!chunks.is_empty());
+
+        let compressor = XferCompressor::new(CompressionMode::Foreground);
+        for chunk in &chunks {
+            let cc = compressor.compress_chunk(chunk).expect("compress_chunk failed");
+            assert_eq!(cc.id, chunk.id, "id preserved");
+            assert_eq!(cc.offset, chunk.offset, "offset preserved");
+            let decompressed = decompress(&cc.compressed, None).expect("decompress failed");
+            assert_eq!(decompressed, chunk.data, "roundtrip mismatch");
+        }
+    }
+
+    #[cfg(feature = "full")]
+    #[test]
+    fn compress_chunks_foreground_uses_level_3() {
+        use crate::chunker::chunk_data;
+
+        let source: Vec<u8> = (0u8..=255).cycle().take(128 * 1024).collect();
+        let chunks = chunk_data(&source);
+        let compressor = XferCompressor::new(CompressionMode::Foreground);
+        assert_eq!(compressor.mode(), CompressionMode::Foreground);
+        let compressed = compress_chunks(&chunks, &compressor).expect("compress_chunks failed");
+        assert_eq!(compressed.len(), chunks.len());
+        for (cc, chunk) in compressed.iter().zip(chunks.iter()) {
+            assert_eq!(cc.id, chunk.id);
+            assert_eq!(cc.offset, chunk.offset);
+            assert!(!cc.compressed.is_empty());
+        }
     }
 
     #[test]
