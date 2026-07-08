@@ -16,8 +16,9 @@ flatbuffers = "24"
 [target.'cfg(target_os = "macos")'.dependencies]
 
 [target.'cfg(target_os = "windows")'.dependencies]
-# Named-pipe IPC transport and ShellExecuteExW for the UAC secure-desktop hand-off.
 # Named-pipe IPC, UAC hand-off, and SendInput for keyboard/mouse injection.
+# DXGI Desktop Duplication uses raw COM vtable calls (no windows-sys DXGI feature
+# needed — windows-sys 0.59 does not expose Win32_Graphics_Dxgi).
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",

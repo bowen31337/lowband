@@ -31,6 +31,7 @@ pub mod elevation;
 pub mod gear_policy;
 pub mod input_injection;
 pub mod ipc;
+pub mod screen_capture;
 pub mod thermal;
 pub mod tier;
 pub mod uac;
@@ -40,6 +41,7 @@ pub use elevation::{ElevationKind, ElevationOutcome, ElevationRequest, Escalatio
 #[cfg(target_os = "windows")]
 pub use elevation::WinElevationBridge;
 pub use input_injection::{InputBroker, InputEvent, InjectionError, MouseButton};
+pub use screen_capture::{CaptureError, CaptureFrame, DirtyRect, ScreenCaptureBroker};
 pub use gear_policy::{
     allocate, CameraGear, GearConstraints, StreamBudgets, AUDIO_FLOOR_BPS,
 };
