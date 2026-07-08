@@ -4,6 +4,7 @@
 //!
 //! | # | Feature |
 //! |---|---------|
+//! | 11 | wire_seq expansion — 16-bit wire field → full 47-bit sequence at the receiver |
 //! | 12 | path_challenge / path_response — migrates the session to a new path without renegotiation |
 //! | 13 | delay-gradient trendline estimator — OWD variation slope drives congestion control |
 //! | 14 | cellular_mode guard — widens γ, caps decrease frequency, and gates increases on OWD trend when bimodal spikes appear |
@@ -38,6 +39,7 @@ pub mod delay;
 pub mod fec;
 pub mod pacer;
 pub mod path;
+pub mod seq;
 
 pub use delay::{
     BandwidthUsage, DelayGradientEstimator, MIN_WINDOW_FOR_SLOPE,
@@ -64,3 +66,4 @@ pub use path::{
     ChallengeToken, MigrationEvent, PathChallengeFrame, PathMigrationController,
     PathResponseFrame, CHALLENGE_TIMEOUT_TICKS, MAX_CHALLENGE_RETRIES,
 };
+pub use seq::{SeqExpander, SEQ_BITS, SEQ_MAX, WIRE_SEQ_BITS};
