@@ -220,6 +220,45 @@ mod tests {
         );
     }
 
+    // ── Feature 112: clipboard text only with capability_token held live ─────
+
+    /// Verify that clipboard text is synced only while the capability_token
+    /// is actively held, and that revocation is reflected immediately on the
+    /// next operation — there is no pre-authorisation window.
+    #[test]
+    fn syncs_clipboard_text_only_with_capability_token_held_live() {
+        let mut session = ClipboardSession::new();
+
+        // Before any grant: every sync attempt is rejected.
+        for text in &["first", "second", "third"] {
+            assert_eq!(
+                session.apply_remote(text),
+                Err(ClipboardError::NoActiveGrant),
+                "sync must be rejected without live capability_token (text={text})"
+            );
+        }
+
+        // capability_token held live: every sync attempt succeeds.
+        session.set_grant(Some(ClipboardGrant::new()));
+        for text in &["alpha", "beta", "gamma"] {
+            assert!(
+                session.apply_remote(text).is_ok(),
+                "sync must succeed while capability_token is held live (text={text})"
+            );
+        }
+
+        // Token revoked mid-stream: subsequent syncs are rejected immediately,
+        // with no grace period — "held live" means live at each call site.
+        session.set_grant(None);
+        for text in &["delta", "epsilon", "zeta"] {
+            assert_eq!(
+                session.apply_remote(text),
+                Err(ClipboardError::NoActiveGrant),
+                "sync must be rejected the moment capability_token is dropped (text={text})"
+            );
+        }
+    }
+
     // ── Feature 113: clipboard round_trip under 1 s at constrained tier ──────
 
     #[test]
