@@ -45,6 +45,7 @@ pub mod pacer;
 pub mod path;
 pub mod seq;
 pub mod tcp_fallback;
+pub mod turn_relay;
 
 pub use delay::{
     BandwidthUsage, DelayGradientEstimator, MIN_WINDOW_FOR_SLOPE,
@@ -82,4 +83,11 @@ pub use tcp_fallback::{
     TcpFramer, TcpPenaltyTracker, TcpReassembler,
     TCP_FALLBACK_PORT, TCP_FALLBACK_PENALTY_FLOOR_MS,
     TCP_LENGTH_PREFIX_BYTES, TCP_MAX_DATAGRAM_BYTES, TCP_RTT_EWMA_ALPHA,
+};
+pub use turn_relay::{
+    RelayEvent, TurnChannelDataFramer, TurnRelayController,
+    TURN_CHANNEL_HEADER_BYTES, TURN_DEFAULT_CHANNEL_NUMBER,
+    TURN_KEEPALIVE_INTERVAL_TICKS, TURN_MAX_CHANNEL_NUMBER,
+    TURN_MAX_PAYLOAD_BYTES, TURN_MIN_CHANNEL_NUMBER,
+    TURN_PROBE_MAX_RETRIES, TURN_PROBE_TIMEOUT_TICKS,
 };
