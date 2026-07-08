@@ -40,6 +40,7 @@ pub mod congestion;
 pub mod connection;
 pub mod delay;
 pub mod fec;
+pub mod mtu;
 pub mod pacer;
 pub mod path;
 pub mod seq;
@@ -66,6 +67,10 @@ pub use pacer::{
     ChannelId, DeliveryClass, CHANNEL_DELIVERY_CLASS,
     Pacer, PacerAggregatedDatagram, PacerFrame, PRIORITY_ORDER,
     MAX_DATAGRAM_PAYLOAD_BYTES,
+};
+pub use mtu::{
+    MtuEvent, MtuProbeFrame, PathMtuController, MTU_BASE_BYTES, MTU_PROBE_MAX_RETRIES,
+    MTU_PROBE_STEPS, MTU_PROBE_TIMEOUT_TICKS,
 };
 pub use path::{
     ChallengeToken, MigrationEvent, PathChallengeFrame, PathMigrationController,
