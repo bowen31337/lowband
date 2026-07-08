@@ -4,13 +4,14 @@
 //!
 //! | # | Feature |
 //! |---|---------|
+//! | 10 | token_bucket pacing — every outbound packet passes through the pacer; no encoder burst floods the uplink queue |
 //! | 11 | wire_seq expansion — 16-bit wire field → full 47-bit sequence at the receiver |
 //! | 12 | path_challenge / path_response — migrates the session to a new path without renegotiation |
 //! | 13 | delay-gradient trendline estimator — OWD variation slope drives congestion control |
 //! | 14 | cellular_mode guard — widens γ, caps decrease frequency, and gates increases on OWD trend when bimodal spikes appear |
 //! | 16 | adaptive Reed-Solomon FEC via Gilbert-Elliott burst model |
 //! | 17 | channel_priority pacer — input beats media in every queue |
-//! | 19 | per-tick frame coalescing — concurrent frames from all channels into one aggregated_datagram |
+//! | 18 | per-tick frame coalescing — concurrent frames from all channels into one aggregated_datagram |
 //! | 20 | loss backstop — multiplicative send_rate reduction when sustained loss > 10 % |
 //!
 //! # Channel map
@@ -35,6 +36,7 @@
 
 pub mod cellular;
 pub mod congestion;
+pub mod connection;
 pub mod delay;
 pub mod fec;
 pub mod pacer;
@@ -58,6 +60,7 @@ pub use fec::{
     GilbertElliottEstimator, GilbertElliottParams, MAX_FEC_RATIO, MIN_FEC_RATIO,
     MIN_OBS_FOR_ESTIMATE,
 };
+pub use connection::Connection;
 pub use pacer::{
     ChannelId, Pacer, PacerAggregatedDatagram, PacerFrame, PRIORITY_ORDER,
     MAX_DATAGRAM_PAYLOAD_BYTES,
