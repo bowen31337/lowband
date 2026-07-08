@@ -44,6 +44,7 @@ pub mod mtu;
 pub mod pacer;
 pub mod path;
 pub mod seq;
+pub mod tcp_fallback;
 
 pub use delay::{
     BandwidthUsage, DelayGradientEstimator, MIN_WINDOW_FOR_SLOPE,
@@ -77,3 +78,8 @@ pub use path::{
     PathResponseFrame, CHALLENGE_TIMEOUT_TICKS, MAX_CHALLENGE_RETRIES,
 };
 pub use seq::{SeqExpander, SEQ_BITS, SEQ_MAX, WIRE_SEQ_BITS};
+pub use tcp_fallback::{
+    TcpFramer, TcpPenaltyTracker, TcpReassembler,
+    TCP_FALLBACK_PORT, TCP_FALLBACK_PENALTY_FLOOR_MS,
+    TCP_LENGTH_PREFIX_BYTES, TCP_MAX_DATAGRAM_BYTES, TCP_RTT_EWMA_ALPHA,
+};
