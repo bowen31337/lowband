@@ -83,7 +83,7 @@ pub use fec::{
     BurstStatsFitter, GilbertElliottEstimator, GilbertElliottParams, MAX_FEC_RATIO,
     MIN_FEC_RATIO, MIN_OBS_FOR_ESTIMATE, MIN_RUNS_FOR_ESTIMATE,
 };
-pub use connection::Connection;
+pub use connection::{Connection, ConnectionId};
 pub use pacer::{
     ChannelId, DeliveryClass, CHANNEL_DELIVERY_CLASS,
     Pacer, PacerAggregatedDatagram, PacerFrame, PRIORITY_ORDER,

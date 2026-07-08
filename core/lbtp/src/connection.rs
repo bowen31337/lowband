@@ -30,9 +30,25 @@
 //! In unit tests or simulations that cannot rely on wall-clock time, use
 //! [`Connection::tick_ns`] to advance by a fixed number of nanoseconds instead.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::pacer::{ChannelId, Pacer, PacerAggregatedDatagram, PacerFrame};
+
+/// Opaque per-session identifier assigned when a peer LBTP session is
+/// established over UDP (Feature 1).
+///
+/// Each call to [`Connection::new`] claims a unique value from a
+/// process-global monotone counter.  The counter starts at 1; 0 is reserved
+/// as a sentinel "no session" value in the database schema (`connection_id
+/// BIGINT NOT NULL` in `session_records`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConnectionId(pub u64);
+
+/// Process-global monotone counter; wraps at `u64::MAX` back to 1 (0 stays
+/// reserved).  `Relaxed` ordering is sufficient because the value is only
+/// used for uniqueness, not for synchronising other memory.
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Paced transport connection send path.
 ///
@@ -45,6 +61,8 @@ use crate::pacer::{ChannelId, Pacer, PacerAggregatedDatagram, PacerFrame};
 /// must be called exclusively from that thread.
 #[derive(Debug)]
 pub struct Connection {
+    /// Unique identifier for this session (Feature 1).
+    id: ConnectionId,
     pacer: Pacer,
     /// Wall-clock instant of the previous [`tick`](Connection::tick) call.
     /// Used to compute elapsed nanoseconds without the caller tracking time.
@@ -53,11 +71,23 @@ pub struct Connection {
 
 impl Connection {
     /// Create a paced connection with `initial_rate_bps` bits-per-second send rate.
+    ///
+    /// Assigns a fresh [`ConnectionId`] by atomically incrementing the
+    /// process-global session counter (Feature 1).
     pub fn new(initial_rate_bps: f64) -> Self {
+        let raw = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+        // Wrap past u64::MAX back to 1 so 0 remains reserved.
+        let id = ConnectionId(if raw == 0 { 1 } else { raw });
         Self {
+            id,
             pacer: Pacer::new(initial_rate_bps),
             last_tick: Instant::now(),
         }
+    }
+
+    /// The unique identifier assigned to this session at construction (Feature 1).
+    pub fn connection_id(&self) -> ConnectionId {
+        self.id
     }
 
     /// Update the controlled send rate.
@@ -442,6 +472,34 @@ mod tests {
         conn.enqueue(frame(CH_AUDIO, 80));
         conn.tick_ns(1_000_000);
         assert_eq!(conn.pending_bytes(CH_AUDIO), 0);
+    }
+
+    // ── Feature 1: per-session connection_id ─────────────────────────────
+
+    #[test]
+    fn connection_id_is_nonzero() {
+        let conn = Connection::new(150_000.0);
+        assert_ne!(conn.connection_id().0, 0, "connection_id must never be the reserved sentinel 0");
+    }
+
+    #[test]
+    fn consecutive_connections_have_distinct_ids() {
+        let a = Connection::new(150_000.0);
+        let b = Connection::new(150_000.0);
+        assert_ne!(
+            a.connection_id(),
+            b.connection_id(),
+            "each session must receive a unique connection_id"
+        );
+    }
+
+    #[test]
+    fn connection_id_is_stable_across_ticks() {
+        let mut conn = Connection::new(150_000.0);
+        let id_before = conn.connection_id();
+        conn.enqueue(frame(CH_AUDIO, 80));
+        conn.tick_ns(1_000_000);
+        assert_eq!(conn.connection_id(), id_before, "connection_id must not change across ticks");
     }
 
     // ── Feature 7: reject datagrams larger than 1 200 bytes ──────────────
