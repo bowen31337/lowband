@@ -1,4 +1,4 @@
-//! Thermal gear-degradation policy and display resolution ladder — Features 130, 131, 161.
+//! Thermal gear-degradation policy and display resolution ladder — Features 129, 130, 131, 161.
 //!
 //! The governor calls [`GearConstraints::from_thermal`] at each 10 Hz tick
 //! and applies the returned constraints when it calls `set_gear()` and
@@ -34,6 +34,29 @@
 //! locks to the 640×360 floor.
 
 use crate::thermal::ThermalPressure;
+
+/// Target frame rate used when computing the Gear B per-frame byte cap.
+///
+/// SVT-AV1 (Gear B) targets 30 fps; the pacer uses this constant to
+/// derive a per-frame budget from the bitrate allocation.
+pub const GEAR_B_TARGET_FPS: u32 = 30;
+
+/// Compute the maximum bytes that a single Gear B (SVT-AV1) encoded frame
+/// may occupy (Feature 129).
+///
+/// The cap is 2× the average bytes-per-frame for the given bitrate and frame
+/// rate.  This gives the encoder enough headroom for complex scenes while
+/// preventing burst frames from swamping the pacer or exhausting the uplink
+/// token bucket.
+///
+/// Returns 0 when `fps` is 0 to avoid a divide-by-zero on degenerate input.
+pub fn gear_b_per_frame_byte_cap(camera_bps: u32, fps: u32) -> u32 {
+    if fps == 0 {
+        return 0;
+    }
+    // 2 × average_bytes_per_frame = 2 × (camera_bps / (8 × fps))
+    camera_bps * 2 / (8 * fps)
+}
 
 /// The lowest bit rate, in bits per second, that the audio stream must always
 /// receive regardless of thermal or bandwidth conditions.
@@ -273,6 +296,14 @@ pub struct StreamBudgets {
     /// `screen_coarse_bps` (Feature 130).  640×360 at low budgets; 848×480
     /// when `screen_coarse_bps` ≥ [`SCREEN_UPGRADE_BPS`].
     pub display_resolution: DisplayResolution,
+    /// Per-frame byte ceiling for Gear B (SVT-AV1) encoded output (Feature 129).
+    ///
+    /// Non-zero only when `max_camera_gear` is [`CameraGear::GearB`].  The
+    /// encoder must not emit a frame exceeding this size; doing so would
+    /// produce a burst that stalls the pacer.  Set to 2× the average
+    /// bytes-per-frame at the allocated `camera_bps`.  Zero for all other
+    /// gears (Gear A, Gear C, Off).
+    pub per_frame_byte_cap: u32,
 }
 
 const INPUT_FLOOR_BPS: u32 = 3_000;
@@ -322,6 +353,12 @@ pub fn allocate(total_bps: u32, constraints: &GearConstraints) -> StreamBudgets 
     // 6. File transfer — whatever headroom is left.
     let xfer_bps = remaining;
 
+    // Per-frame byte cap: only meaningful (non-zero) for Gear B frames.
+    let per_frame_byte_cap = match constraints.max_camera_gear {
+        CameraGear::GearB { .. } => gear_b_per_frame_byte_cap(camera_bps, GEAR_B_TARGET_FPS),
+        _ => 0,
+    };
+
     StreamBudgets {
         audio_bps,
         input_bps,
@@ -330,6 +367,7 @@ pub fn allocate(total_bps: u32, constraints: &GearConstraints) -> StreamBudgets 
         screen_refinement_bps,
         xfer_bps,
         display_resolution: select_resolution(screen_coarse_bps),
+        per_frame_byte_cap,
     }
 }
 
@@ -560,6 +598,84 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── per_frame_byte_cap — Gear B burst bound (Feature 129) ───────────────
+
+    #[test]
+    fn gear_b_cap_at_60kbps_30fps() {
+        // 2 × (60_000 / (8 × 30)) = 500 bytes
+        assert_eq!(gear_b_per_frame_byte_cap(60_000, 30), 500);
+    }
+
+    #[test]
+    fn gear_b_cap_at_300kbps_30fps() {
+        // 2 × (300_000 / (8 × 30)) = 2500 bytes
+        assert_eq!(gear_b_per_frame_byte_cap(300_000, 30), 2_500);
+    }
+
+    #[test]
+    fn gear_b_cap_returns_zero_for_zero_fps() {
+        assert_eq!(gear_b_per_frame_byte_cap(300_000, 0), 0);
+    }
+
+    #[test]
+    fn allocate_sets_per_frame_byte_cap_for_gear_b() {
+        // Fair thermal → Gear B; cap must be 2× average bytes/frame.
+        let c = GearConstraints::from_thermal(ThermalPressure::Fair);
+        let b = allocate(200_000, &c);
+        assert!(
+            matches!(c.max_camera_gear, CameraGear::GearB { .. }),
+            "precondition: Fair thermal must yield Gear B"
+        );
+        let expected = gear_b_per_frame_byte_cap(b.camera_bps, GEAR_B_TARGET_FPS);
+        assert_eq!(
+            b.per_frame_byte_cap, expected,
+            "per_frame_byte_cap must equal 2× average bytes/frame at camera_bps={}",
+            b.camera_bps
+        );
+        assert!(b.per_frame_byte_cap > 0, "cap must be non-zero when Gear B is active");
+    }
+
+    #[test]
+    fn allocate_per_frame_byte_cap_zero_when_camera_off() {
+        let c = GearConstraints::from_thermal(ThermalPressure::Critical);
+        let b = allocate(400_000, &c);
+        assert_eq!(
+            b.per_frame_byte_cap, 0,
+            "cap must be zero when camera is off (Critical thermal)"
+        );
+    }
+
+    #[test]
+    fn allocate_per_frame_byte_cap_zero_for_gear_a() {
+        let c = GearConstraints::from_thermal(ThermalPressure::Nominal);
+        let b = allocate(400_000, &c);
+        assert!(
+            matches!(c.max_camera_gear, CameraGear::GearA),
+            "precondition: Nominal thermal must yield Gear A"
+        );
+        assert_eq!(
+            b.per_frame_byte_cap, 0,
+            "cap must be zero for Gear A (only applies to Gear B)"
+        );
+    }
+
+    #[test]
+    fn allocate_per_frame_byte_cap_zero_for_gear_c() {
+        let c = GearConstraints::from_thermal_with_capability(
+            ThermalPressure::Nominal,
+            Av1EncodeCapability::Legacy,
+        );
+        let b = allocate(400_000, &c);
+        assert!(
+            matches!(c.max_camera_gear, CameraGear::GearC),
+            "precondition: Legacy CPU must yield Gear C"
+        );
+        assert_eq!(
+            b.per_frame_byte_cap, 0,
+            "cap must be zero for Gear C (only applies to Gear B)"
+        );
     }
 
     #[test]
