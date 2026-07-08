@@ -10,4 +10,4 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 lowband-lbtp      = { path = "../core/lbtp" }
-lowband-platform  = { path = "../core/platform" }
+lowband-platform  = { path = "../core/platform", default-features = false }

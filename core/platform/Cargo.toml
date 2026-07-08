@@ -6,8 +6,12 @@ description = "LowBand platform integration — CPU ceiling, tier state, thermal
 
 # Platform deps: macOS links CoreGraphics (always present), Linux links libei
 # (system package), Windows links windows-sys for SendInput and named pipes.
+[features]
+default = ["ipc"]
+ipc = ["dep:flatbuffers"]
+
 [dependencies]
-flatbuffers = "24"
+flatbuffers = { version = "24", optional = true }
 
 [dev-dependencies]
 

@@ -30,6 +30,7 @@ pub mod cpu_ceiling;
 pub mod elevation;
 pub mod gear_policy;
 pub mod input_injection;
+#[cfg(feature = "ipc")]
 pub mod ipc;
 pub mod screen_capture;
 pub mod thermal;
