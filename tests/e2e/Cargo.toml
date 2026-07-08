@@ -1,0 +1,17 @@
+[package]
+name = "lowband-e2e"
+version = "0.1.0"
+edition = "2021"
+description = "LowBand end-to-end integration tests"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+lowband-signaling = { path = "../../core/signaling" }
+axum = "0.7"
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"
+tokio = { version = "1", features = ["rt", "macros"] }
+serde_json = "1"
