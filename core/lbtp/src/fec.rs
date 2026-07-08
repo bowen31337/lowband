@@ -65,6 +65,12 @@ const REF_BLOCK_SYMBOLS: f64 = 32.0;
 /// conservative default ([`MIN_FEC_RATIO`]).
 pub const MIN_OBS_FOR_ESTIMATE: u64 = 30;
 
+/// Minimum completed run pairs before [`BurstStatsFitter::params`] produces an estimate.
+///
+/// One run pair is one good (received) run followed by one bad (lost) run.  Eight
+/// pairs give stable mean estimates while staying responsive to channel changes.
+pub const MIN_RUNS_FOR_ESTIMATE: u64 = 8;
+
 /// Gilbert-Elliott two-state Markov model parameters for one stream.
 ///
 /// Derived from the simplified Gilbert form: `p = 0` (no loss in good state),
@@ -278,6 +284,136 @@ impl GilbertElliottEstimator {
     /// Total packet observations fed to this estimator.
     pub fn observation_count(&self) -> u64 {
         self.n_obs
+    }
+}
+
+/// Batch Gilbert-Elliott parameter fitter from ACK-decoded run-length sequences.
+///
+/// Where [`GilbertElliottEstimator`] performs per-packet EMA, this fitter ingests
+/// complete run-length sequences decoded from ACK frames and derives GE parameters
+/// via method-of-moments on the empirical run-length distributions:
+///
+/// ```text
+/// mean good run  M_g = E[received-run length]  →  a = 1 / M_g  (G → B per packet)
+/// mean bad  run  M_b = E[lost-run length]       →  b = 1 / M_b  (B → G per packet)
+/// steady-state loss  L = a / (a + b)
+/// ```
+///
+/// The simplified Gilbert form is used throughout (`p = 0`, `q = 1`).
+///
+/// # Usage
+///
+/// Create one fitter per stream.  Each time an ACK frame is decoded, extract the
+/// alternating good/bad run lengths and call [`ingest_ack_run_lengths`].  Query
+/// [`fec_ratio`] to size the repair block.
+///
+/// ```rust
+/// use lowband_lbtp::fec::{BurstStatsFitter, MIN_FEC_RATIO};
+///
+/// let mut fitter = BurstStatsFitter::new();
+///
+/// // Simulate ACK frame reporting 10 received then 2 lost, repeated.
+/// let runs: Vec<(u32, u32)> = (0..20).map(|_| (10u32, 2u32)).collect();
+/// fitter.ingest_ack_run_lengths(&runs);
+///
+/// assert!(fitter.fec_ratio() >= MIN_FEC_RATIO);
+/// ```
+///
+/// [`ingest_ack_run_lengths`]: Self::ingest_ack_run_lengths
+/// [`fec_ratio`]: Self::fec_ratio
+#[derive(Debug, Default, Clone)]
+pub struct BurstStatsFitter {
+    good_run_sum: u64,
+    good_run_count: u64,
+    bad_run_sum: u64,
+    bad_run_count: u64,
+}
+
+impl BurstStatsFitter {
+    /// Create a new, empty fitter.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ingest a slice of `(good_len, bad_len)` run pairs decoded from one ACK frame.
+    ///
+    /// Each pair represents one complete channel cycle: `good_len` consecutive
+    /// received packets followed by `bad_len` consecutive lost packets.  Zero-length
+    /// fields are silently skipped so partial terminal runs (e.g., a trailing
+    /// good-only run at the end of an ACK window) can be passed as `(n, 0)`.
+    pub fn ingest_ack_run_lengths(&mut self, runs: &[(u32, u32)]) {
+        for &(good, bad) in runs {
+            if good > 0 {
+                self.good_run_sum += u64::from(good);
+                self.good_run_count += 1;
+            }
+            if bad > 0 {
+                self.bad_run_sum += u64::from(bad);
+                self.bad_run_count += 1;
+            }
+        }
+    }
+
+    /// Ingest a single good (received) run of `len` packets.
+    pub fn observe_good_run(&mut self, len: u32) {
+        if len > 0 {
+            self.good_run_sum += u64::from(len);
+            self.good_run_count += 1;
+        }
+    }
+
+    /// Ingest a single bad (loss) run of `len` packets.
+    pub fn observe_bad_run(&mut self, len: u32) {
+        if len > 0 {
+            self.bad_run_sum += u64::from(len);
+            self.bad_run_count += 1;
+        }
+    }
+
+    /// Number of complete (good, bad) run pairs observed so far.
+    ///
+    /// A pair requires both a good run and a bad run to have been recorded.
+    pub fn run_pair_count(&self) -> u64 {
+        self.good_run_count.min(self.bad_run_count)
+    }
+
+    /// Fitted Gilbert-Elliott parameters.
+    ///
+    /// Returns `None` until at least [`MIN_RUNS_FOR_ESTIMATE`] complete run pairs
+    /// have been observed.
+    ///
+    /// Uses method-of-moments:
+    ///
+    /// ```text
+    /// a = 1 / mean_good_run
+    /// b = 1 / mean_bad_run
+    /// p = 0, q = 1   (simplified Gilbert form)
+    /// ```
+    pub fn params(&self) -> Option<GilbertElliottParams> {
+        if self.run_pair_count() < MIN_RUNS_FOR_ESTIMATE {
+            return None;
+        }
+        let mean_good = self.good_run_sum as f64 / self.good_run_count as f64;
+        let mean_bad = self.bad_run_sum as f64 / self.bad_run_count as f64;
+        let a = 1.0 / mean_good.max(1.0);
+        let b = 1.0 / mean_bad.max(1.0);
+        Some(GilbertElliottParams { a, b, p: 0.0, q: 1.0 })
+    }
+
+    /// Recommended RS FEC repair ratio derived from the fitted GE parameters.
+    ///
+    /// Uses the same two-bound formula as [`GilbertElliottEstimator::fec_ratio`]:
+    /// independent-loss baseline and burst-coverage fraction.  Returns
+    /// [`MIN_FEC_RATIO`] until [`MIN_RUNS_FOR_ESTIMATE`] pairs have been observed.
+    pub fn fec_ratio(&self) -> f64 {
+        let Some(p) = self.params() else {
+            return MIN_FEC_RATIO;
+        };
+        let loss = p.mean_loss_rate().clamp(0.0, 0.99);
+        let burst = p.mean_burst_len().max(1.0);
+        let independent = loss / (1.0 - loss);
+        let burst_coverage = burst.min(REF_BLOCK_SYMBOLS) / REF_BLOCK_SYMBOLS;
+        independent.max(burst_coverage).clamp(MIN_FEC_RATIO, MAX_FEC_RATIO)
     }
 }
 
@@ -616,5 +752,163 @@ mod tests {
         assert_eq!(a.loss_rate(), b.loss_rate());
         assert_eq!(a.mean_burst_len(), b.mean_burst_len());
         assert_eq!(a.observation_count(), b.observation_count());
+    }
+
+    // ── BurstStatsFitter ──────────────────────────────────────────────────────
+
+    fn make_pairs(good: u32, bad: u32, n: usize) -> Vec<(u32, u32)> {
+        vec![(good, bad); n]
+    }
+
+    #[test]
+    fn fitter_params_none_before_min_runs() {
+        let mut f = BurstStatsFitter::new();
+        let pairs = make_pairs(10, 2, MIN_RUNS_FOR_ESTIMATE as usize - 1);
+        f.ingest_ack_run_lengths(&pairs);
+        assert!(f.params().is_none());
+    }
+
+    #[test]
+    fn fitter_fec_ratio_min_before_min_runs() {
+        let f = BurstStatsFitter::new();
+        assert_eq!(f.fec_ratio(), MIN_FEC_RATIO);
+    }
+
+    #[test]
+    fn fitter_params_some_after_min_runs() {
+        let mut f = BurstStatsFitter::new();
+        let pairs = make_pairs(10, 2, MIN_RUNS_FOR_ESTIMATE as usize);
+        f.ingest_ack_run_lengths(&pairs);
+        assert!(f.params().is_some());
+    }
+
+    #[test]
+    fn fitter_a_b_from_known_mean_runs() {
+        // Good runs of 10 → a = 1/10 = 0.1; bad runs of 4 → b = 1/4 = 0.25.
+        let mut f = BurstStatsFitter::new();
+        f.ingest_ack_run_lengths(&make_pairs(10, 4, 20));
+        let p = f.params().unwrap();
+        assert!(
+            (p.a - 0.1).abs() < 1e-9,
+            "a {} should be 0.1 for mean good run 10",
+            p.a
+        );
+        assert!(
+            (p.b - 0.25).abs() < 1e-9,
+            "b {} should be 0.25 for mean bad run 4",
+            p.b
+        );
+    }
+
+    #[test]
+    fn fitter_mean_loss_rate_from_run_lengths() {
+        // Good runs of 8, bad runs of 2 → π_B = (1/8) / (1/8 + 1/2) = 0.2.
+        let mut f = BurstStatsFitter::new();
+        f.ingest_ack_run_lengths(&make_pairs(8, 2, 20));
+        let p = f.params().unwrap();
+        let expected_loss = 2.0_f64 / (8.0 + 2.0); // 0.2
+        assert!(
+            (p.mean_loss_rate() - expected_loss).abs() < 1e-9,
+            "mean_loss_rate {} should be {} for 8/2 run ratio",
+            p.mean_loss_rate(),
+            expected_loss
+        );
+    }
+
+    #[test]
+    fn fitter_observe_good_bad_individual() {
+        let mut f = BurstStatsFitter::new();
+        for _ in 0..20 {
+            f.observe_good_run(5);
+            f.observe_bad_run(3);
+        }
+        let p = f.params().unwrap();
+        assert!(
+            (p.a - 0.2).abs() < 1e-9,
+            "a {} should be 0.2 for mean good run 5",
+            p.a
+        );
+        assert!(
+            (p.b - 1.0 / 3.0).abs() < 1e-9,
+            "b {} should be 1/3 for mean bad run 3",
+            p.b
+        );
+    }
+
+    #[test]
+    fn fitter_run_pair_count_requires_both() {
+        let mut f = BurstStatsFitter::new();
+        for _ in 0..10 {
+            f.observe_good_run(5);
+        }
+        // Only good runs ingested — pair count should be 0 (no bad runs yet).
+        assert_eq!(f.run_pair_count(), 0);
+    }
+
+    #[test]
+    fn fitter_zero_length_runs_skipped() {
+        let mut f = BurstStatsFitter::new();
+        f.ingest_ack_run_lengths(&[(0, 0); 20]);
+        assert_eq!(f.run_pair_count(), 0);
+        assert!(f.params().is_none());
+    }
+
+    #[test]
+    fn fitter_partial_terminal_run_accepted() {
+        // Last ACK window ends with a good run, no following loss run — (n, 0).
+        let mut f = BurstStatsFitter::new();
+        let mut pairs: Vec<(u32, u32)> = make_pairs(10, 2, 19);
+        pairs.push((10, 0)); // terminal good-only run
+        f.ingest_ack_run_lengths(&pairs);
+        // 20 good runs, 19 bad runs → min pair count = 19 ≥ MIN_RUNS_FOR_ESTIMATE.
+        assert!(f.params().is_some());
+    }
+
+    #[test]
+    fn fitter_fec_ratio_bounded() {
+        // Extreme: very short good runs, very long bad runs → high loss.
+        let mut f = BurstStatsFitter::new();
+        f.ingest_ack_run_lengths(&make_pairs(1, 30, 20));
+        let r = f.fec_ratio();
+        assert!(
+            r >= MIN_FEC_RATIO && r <= MAX_FEC_RATIO,
+            "fec_ratio {} out of [{}, {}]",
+            r,
+            MIN_FEC_RATIO,
+            MAX_FEC_RATIO
+        );
+    }
+
+    #[test]
+    fn fitter_fec_ratio_higher_for_longer_bad_runs() {
+        let mut short_bad = BurstStatsFitter::new();
+        let mut long_bad = BurstStatsFitter::new();
+        short_bad.ingest_ack_run_lengths(&make_pairs(10, 1, 20));
+        long_bad.ingest_ack_run_lengths(&make_pairs(10, 8, 20));
+        assert!(
+            long_bad.fec_ratio() >= short_bad.fec_ratio(),
+            "longer bad runs ({}) should give fec_ratio ({}) >= short bad ({}, {})",
+            long_bad.params().unwrap().mean_burst_len(),
+            long_bad.fec_ratio(),
+            short_bad.fec_ratio(),
+            short_bad.params().unwrap().mean_burst_len(),
+        );
+    }
+
+    #[test]
+    fn fitter_p_zero_q_one_simplified_model() {
+        let mut f = BurstStatsFitter::new();
+        f.ingest_ack_run_lengths(&make_pairs(10, 2, 20));
+        let p = f.params().unwrap();
+        assert_eq!(p.p, 0.0, "simplified model: p must be 0");
+        assert_eq!(p.q, 1.0, "simplified model: q must be 1");
+    }
+
+    #[test]
+    fn fitter_default_equals_new() {
+        let a = BurstStatsFitter::default();
+        let b = BurstStatsFitter::new();
+        assert_eq!(a.run_pair_count(), b.run_pair_count());
+        assert_eq!(a.fec_ratio(), b.fec_ratio());
     }
 }

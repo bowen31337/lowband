@@ -57,8 +57,8 @@ pub use congestion::{
     LOSS_BACKSTOP_THRESHOLD,
 };
 pub use fec::{
-    GilbertElliottEstimator, GilbertElliottParams, MAX_FEC_RATIO, MIN_FEC_RATIO,
-    MIN_OBS_FOR_ESTIMATE,
+    BurstStatsFitter, GilbertElliottEstimator, GilbertElliottParams, MAX_FEC_RATIO,
+    MIN_FEC_RATIO, MIN_OBS_FOR_ESTIMATE, MIN_RUNS_FOR_ESTIMATE,
 };
 pub use connection::Connection;
 pub use pacer::{
