@@ -439,13 +439,15 @@ fn decode_fb(kind: u8, fb: &[u8]) -> Option<IpcEvent> {
             thermal: thermal_from_u8(t.u8_at(2)),
         }),
         KIND_BUDGET => {
+            let screen_coarse_bps = t.u32_at(2);
             let budgets = StreamBudgets {
                 audio_bps: t.u32_at(0),
                 input_bps: t.u32_at(1),
-                screen_coarse_bps: t.u32_at(2),
+                screen_coarse_bps,
                 camera_bps: t.u32_at(3),
                 screen_refinement_bps: t.u32_at(4),
                 xfer_bps: t.u32_at(5),
+                display_resolution: crate::gear_policy::select_resolution(screen_coarse_bps),
             };
             Some(IpcEvent::StreamBudget { budgets, rtt_ms: t.u32_at(6), loss_pct: t.f32_at(7) })
         }
@@ -875,6 +877,7 @@ mod tests {
             camera_bps: 150_000,
             screen_refinement_bps: 30_000,
             xfer_bps: 10_000,
+            display_resolution: crate::gear_policy::select_resolution(20_000),
         };
         let ev = roundtrip(IpcEvent::StreamBudget {
             budgets,
