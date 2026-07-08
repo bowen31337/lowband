@@ -5,4 +5,5 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Our wrapper prepends -L/tmp/rust-libs before any -l flags so rust-lld
 # (which processes -L/-l in order) can find the system shared libraries.
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$SCRIPT_DIR/bin/rust-lld"
-exec /home/ubuntu/.cargo/bin/cargo test -p lowband-xfer "$@"
+/home/ubuntu/.cargo/bin/cargo test -p lowband-xfer "$@" &&
+exec /home/ubuntu/.cargo/bin/cargo test -p lowband-messaging "$@"
