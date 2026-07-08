@@ -343,6 +343,8 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "http-body-util",
+ "lowband-lbtp",
+ "lowband-platform",
  "lowband-signaling",
  "serde_json",
  "tokio",

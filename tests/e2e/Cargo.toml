@@ -10,6 +10,8 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 lowband-signaling = { path = "../../core/signaling" }
+lowband-lbtp = { path = "../../core/lbtp" }
+lowband-platform = { path = "../../core/platform" }
 axum = "0.7"
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
