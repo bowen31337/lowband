@@ -4,6 +4,7 @@
 //!
 //! | # | Feature |
 //! |---|---------|
+//! | 4  | nat_keepalive — hold bindings open with a jittered 15–25 s keepalive timer |
 //! | 9  | three delivery classes (realtime / reliable-unordered / reliable-ordered) multiplexed on one five_tuple via the channel ID |
 //! | 10 | token_bucket pacing — every outbound packet passes through the pacer; no encoder burst floods the uplink queue |
 //! | 11 | wire_seq expansion — 16-bit wire field → full 47-bit sequence at the receiver |
@@ -41,6 +42,7 @@ pub mod connection;
 pub mod delay;
 pub mod fec;
 pub mod mtu;
+pub mod nat_keepalive;
 pub mod pacer;
 pub mod path;
 pub mod seq;
@@ -73,6 +75,10 @@ pub use pacer::{
 pub use mtu::{
     MtuEvent, MtuProbeFrame, PathMtuController, MTU_BASE_BYTES, MTU_PROBE_MAX_RETRIES,
     MTU_PROBE_STEPS, MTU_PROBE_TIMEOUT_TICKS,
+};
+pub use nat_keepalive::{
+    KeepaliveEvent, NatKeepaliveController,
+    NAT_KEEPALIVE_MAX_TICKS, NAT_KEEPALIVE_MIN_TICKS,
 };
 pub use path::{
     ChallengeToken, MigrationEvent, PathChallengeFrame, PathMigrationController,
