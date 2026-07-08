@@ -2,6 +2,7 @@
 //!
 //! | Feature | Description |
 //! |---------|-------------|
+//! | 128 | Denoise pre-filter: cleans sensor noise with denoise_prefilter before encode |
 //! | 155 | Privilege escalation: per-platform elevation documented, explicit, never silent |
 //! | 160 | CPU ceiling: caps a constrained-tier session to 35% on a 2015-class laptop |
 //! | 161 | Thermal gear degradation: degrades encoder gears with thermal_pressure, never drops voice |
@@ -27,6 +28,7 @@
 //! every network bandwidth.
 
 pub mod cpu_ceiling;
+pub mod denoise_prefilter;
 pub mod elevation;
 pub mod gear_policy;
 pub mod input_injection;
@@ -38,6 +40,7 @@ pub mod tier;
 pub mod uac;
 
 pub use cpu_ceiling::{CpuCeiling, ThrottleAction};
+pub use denoise_prefilter::DenoisePrefilter;
 pub use elevation::{ElevationKind, ElevationOutcome, ElevationRequest, EscalationReason};
 #[cfg(target_os = "windows")]
 pub use elevation::WinElevationBridge;
