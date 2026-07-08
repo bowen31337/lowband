@@ -4,6 +4,7 @@
 //!
 //! | # | Feature |
 //! |---|---------|
+//! | 3  | hole_punch — paced probes open a direct udp_path between peers |
 //! | 4  | nat_keepalive — hold bindings open with a jittered 15–25 s keepalive timer |
 //! | 9  | three delivery classes (realtime / reliable-unordered / reliable-ordered) multiplexed on one five_tuple via the channel ID |
 //! | 10 | token_bucket pacing — every outbound packet passes through the pacer; no encoder burst floods the uplink queue |
@@ -41,6 +42,7 @@ pub mod congestion;
 pub mod connection;
 pub mod delay;
 pub mod fec;
+pub mod hole_punch;
 pub mod mtu;
 pub mod nat_keepalive;
 pub mod pacer;
@@ -49,6 +51,11 @@ pub mod seq;
 pub mod tcp_fallback;
 pub mod turn_relay;
 
+pub use hole_punch::{
+    HolePunchController, HolePunchEvent, HolePunchProbeFrame,
+    HOLE_PUNCH_MAX_PROBES, HOLE_PUNCH_PROBE_INTERVAL_TICKS,
+    HOLE_PUNCH_PROBE_PAYLOAD_BYTES,
+};
 pub use delay::{
     BandwidthUsage, DelayGradientEstimator, MIN_WINDOW_FOR_SLOPE,
     OVERUSE_THRESHOLD_GAMMA_US_PER_MS, TRENDLINE_SMOOTHING_ALPHA, TRENDLINE_WINDOW_SIZE,
