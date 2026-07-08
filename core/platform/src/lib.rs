@@ -44,7 +44,7 @@ pub use elevation::WinElevationBridge;
 pub use input_injection::{InputBroker, InputEvent, InjectionError, MouseButton};
 pub use screen_capture::{CaptureError, CaptureFrame, DirtyRect, ScreenCaptureBroker};
 pub use gear_policy::{
-    allocate, CameraGear, GearConstraints, StreamBudgets, AUDIO_FLOOR_BPS,
+    allocate, Av1EncodeCapability, CameraGear, GearConstraints, StreamBudgets, AUDIO_FLOOR_BPS,
 };
 pub use thermal::{ThermalMonitor, ThermalPressure};
 pub use tier::TierState;

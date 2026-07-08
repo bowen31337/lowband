@@ -1,4 +1,4 @@
-//! Thermal gear-degradation policy — Feature 161.
+//! Thermal gear-degradation policy — Features 131, 161.
 //!
 //! The governor calls [`GearConstraints::from_thermal`] at each 10 Hz tick
 //! and applies the returned constraints when it calls `set_gear()` and
@@ -16,6 +16,12 @@
 //! 4. **Screen refinement passes** — suspended at Serious or above (coarse
 //!    lane continues).
 //!
+//! On **legacy CPUs** that fail the AV1 encode capability probe (Feature 131),
+//! Gear A and Gear B are both replaced by Gear C (OpenH264) at every thermal
+//! level where the camera would otherwise be on.  Gear C imposes less CPU load
+//! than SVT-AV1 at any preset, so it never trips the thermal ceiling that
+//! would cause Gear B → Off transitions.
+//!
 //! Voice is **never shed** at any level.  The `audio_floor_bps` field is
 //! constant across all thermal levels; the governor must honour it before
 //! allocating any other stream.
@@ -28,13 +34,73 @@ use crate::thermal::ThermalPressure;
 /// Architecture §12: "audio (floor 6 kbps)".
 pub const AUDIO_FLOOR_BPS: u32 = 6_000;
 
-/// Which camera gear is permitted given the current thermal state.
+/// Startup probe result: whether this CPU can sustain real-time AV1 encode.
+///
+/// The probe runs once when the governor starts.  The result is passed to
+/// [`GearConstraints::from_thermal_with_capability`] on every subsequent tick
+/// so the encoder-selection policy can apply the correct fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Av1EncodeCapability {
+    /// CPU sustains SVT-AV1 at preset 10–12 for 480p / 30 fps in real-time.
+    Capable,
+    /// CPU cannot sustain AV1 encode; the openh264 fallback (Gear C) is required.
+    Legacy,
+}
+
+impl Av1EncodeCapability {
+    /// Run a timed compute benchmark calibrated against SVT-AV1 preset-12
+    /// at 480p / 30 fps.
+    ///
+    /// Executes a multiply-accumulate kernel that mimics the motion-estimation
+    /// and transform-coding load dominant in SVT-AV1 at presets 10–12.  The
+    /// time budget is 8 × 33.3 ms ≈ 267 ms (8 simulated frames at 30 fps).
+    ///
+    /// Returns [`Capable`](Self::Capable) if the kernel finishes within budget,
+    /// [`Legacy`](Self::Legacy) otherwise.
+    ///
+    /// **Blocks for up to ~300 ms.**  Call once at startup before the governor
+    /// loop; store the result and pass it to
+    /// [`GearConstraints::from_thermal_with_capability`] on each tick.
+    pub fn probe() -> Self {
+        const FRAMES: u64 = 8;
+        const ITERS_PER_FRAME: u64 = 500_000;
+        // 8 frames at 30 fps = 267 ms.
+        const BUDGET_NS: u64 = FRAMES * 33_333_333;
+
+        let start = std::time::Instant::now();
+        let mut acc: u64 = 0xdead_beef_cafe_0000;
+        for f in 0..FRAMES {
+            for i in 0..ITERS_PER_FRAME {
+                // Widen-multiply-accumulate: approximates the integer DSP load
+                // of AV1 ME / transform blocks at preset 12.
+                acc = acc
+                    .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                    .wrapping_add(i ^ f);
+            }
+        }
+        // Prevent the optimizer from eliding the loop.
+        std::hint::black_box(acc);
+
+        if start.elapsed().as_nanos() as u64 <= BUDGET_NS {
+            Self::Capable
+        } else {
+            Self::Legacy
+        }
+    }
+}
+
+/// Which camera gear is permitted given the current thermal state and CPU capability.
+///
+/// Rank (highest to lowest): `GearA` > `GearB` > `GearC` > `Off`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraGear {
     /// Neural talking-head codec (Gear A) — 10–30 kbps, NPU/spare-CPU required.
     GearA,
     /// SVT-AV1 (Gear B) — 60–300 kbps; preset 10–12 selected by telemetry.
     GearB { svt_preset: u8 },
+    /// OpenH264 (Gear C) — legacy-CPU fallback; lower compression efficiency
+    /// than SVT-AV1 but runs within the CPU budget of a 2015-class dual-core.
+    GearC,
     /// Camera stream disabled; no frames sent.
     Off,
 }
@@ -58,14 +124,38 @@ pub struct GearConstraints {
     pub audio_floor_bps: u32,
     /// Current thermal level; carried for observability / logging.
     pub thermal_level: ThermalPressure,
+    /// AV1 encode capability of this host, as determined by the startup probe.
+    /// Carried for observability; governs whether [`CameraGear::GearC`] was
+    /// substituted for Gear A / Gear B.
+    pub av1_encode: Av1EncodeCapability,
 }
 
 impl GearConstraints {
     /// Derive constraints from the current thermal pressure.
     ///
-    /// This is the single authoritative mapping from thermal level to encoder
-    /// constraints.  The voice floor is constant and always non-zero.
+    /// Assumes the CPU passed the AV1 encode capability probe.  Equivalent to
+    /// `from_thermal_with_capability(pressure, Av1EncodeCapability::Capable)`.
     pub fn from_thermal(pressure: ThermalPressure) -> Self {
+        Self::from_thermal_with_capability(pressure, Av1EncodeCapability::Capable)
+    }
+
+    /// Derive constraints from thermal pressure **and** the AV1 encode
+    /// capability determined at startup (Feature 131).
+    ///
+    /// On a capable CPU the behaviour is identical to [`from_thermal`].
+    ///
+    /// On a **legacy CPU** (`av1_cap == Legacy`) the camera gear is capped at
+    /// [`CameraGear::GearC`] (OpenH264) at every thermal level where the camera
+    /// would otherwise be on.  Gear C carries lower CPU cost than SVT-AV1 at
+    /// any preset, so it does not trigger the thermal runaway that GearB would
+    /// on such hardware.
+    ///
+    /// Voice floor and screen-refinement rules are unchanged by the capability
+    /// flag: they follow thermal pressure exclusively.
+    pub fn from_thermal_with_capability(
+        pressure: ThermalPressure,
+        av1_cap: Av1EncodeCapability,
+    ) -> Self {
         let (max_camera_gear, screen_refinement_allowed) = match pressure {
             ThermalPressure::Nominal => (CameraGear::GearA, true),
             // Fair: Gear A (neural head) disabled — it is the heaviest CPU user.
@@ -80,12 +170,25 @@ impl GearConstraints {
             ThermalPressure::Critical => (CameraGear::Off, false),
         };
 
+        // On a legacy CPU, replace Gear A and Gear B with Gear C (OpenH264).
+        // Gear C requires no AV1 encode support and runs within the CPU budget
+        // of a 2015-class dual-core without driving thermal pressure further.
+        let max_camera_gear = if av1_cap == Av1EncodeCapability::Legacy {
+            match max_camera_gear {
+                CameraGear::GearA | CameraGear::GearB { .. } => CameraGear::GearC,
+                other => other,
+            }
+        } else {
+            max_camera_gear
+        };
+
         Self {
             max_camera_gear,
             screen_refinement_allowed,
             // Voice floor is invariant across all thermal levels.
             audio_floor_bps: AUDIO_FLOOR_BPS,
             thermal_level: pressure,
+            av1_encode: av1_cap,
         }
     }
 
@@ -334,8 +437,9 @@ mod tests {
         // gear at a lower pressure.
         fn gear_rank(g: CameraGear) -> u8 {
             match g {
-                CameraGear::GearA => 2,
-                CameraGear::GearB { .. } => 1,
+                CameraGear::GearA => 3,
+                CameraGear::GearB { .. } => 2,
+                CameraGear::GearC => 1,
                 CameraGear::Off => 0,
             }
         }

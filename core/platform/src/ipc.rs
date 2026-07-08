@@ -198,6 +198,7 @@ fn camera_gear_to_pair(g: CameraGear) -> (u8, u8) {
         CameraGear::GearA => (0, 0),
         CameraGear::GearB { svt_preset } => (1, svt_preset),
         CameraGear::Off => (2, 0),
+        CameraGear::GearC => (3, 0),
     }
 }
 
@@ -205,7 +206,24 @@ fn camera_gear_from_pair(kind: u8, preset: u8) -> CameraGear {
     match kind {
         0 => CameraGear::GearA,
         1 => CameraGear::GearB { svt_preset: preset },
+        3 => CameraGear::GearC,
         _ => CameraGear::Off,
+    }
+}
+
+fn av1_cap_to_u8(cap: crate::gear_policy::Av1EncodeCapability) -> u8 {
+    use crate::gear_policy::Av1EncodeCapability;
+    match cap {
+        Av1EncodeCapability::Capable => 0,
+        Av1EncodeCapability::Legacy => 1,
+    }
+}
+
+fn av1_cap_from_u8(v: u8) -> crate::gear_policy::Av1EncodeCapability {
+    use crate::gear_policy::Av1EncodeCapability;
+    match v {
+        1 => Av1EncodeCapability::Legacy,
+        _ => Av1EncodeCapability::Capable,
     }
 }
 
@@ -284,6 +302,7 @@ fn encode_gear(constraints: &GearConstraints) -> Vec<u8> {
     fbb.push_slot::<u8>(voff(1), svt_preset, 0);
     fbb.push_slot::<bool>(voff(2), constraints.screen_refinement_allowed, false);
     fbb.push_slot::<u8>(voff(3), thermal_to_u8(constraints.thermal_level), 0);
+    fbb.push_slot::<u8>(voff(4), av1_cap_to_u8(constraints.av1_encode), 0);
     let o = fbb.end_table(start);
     let root: flatbuffers::WIPOffset<flatbuffers::ForwardsUOffset<()>> =
         flatbuffers::WIPOffset::new(o.value());
@@ -437,6 +456,7 @@ fn decode_fb(kind: u8, fb: &[u8]) -> Option<IpcEvent> {
                 screen_refinement_allowed: t.bool_at(2),
                 audio_floor_bps: crate::gear_policy::AUDIO_FLOOR_BPS,
                 thermal_level: thermal_from_u8(t.u8_at(3)),
+                av1_encode: av1_cap_from_u8(t.u8_at(4)),
             };
             Some(IpcEvent::GearUpdate { constraints })
         }
