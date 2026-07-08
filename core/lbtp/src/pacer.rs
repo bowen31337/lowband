@@ -69,6 +69,49 @@ pub const MAX_DATAGRAM_PAYLOAD_BYTES: usize = 1200 - DATAGRAM_OVERHEAD;
 ///  video-rt(5) > reliable(6) > xfer(7) > probes(8)`
 pub const PRIORITY_ORDER: [u8; NUM_CHANNELS] = [0, 3, 2, 1, 4, 5, 6, 7, 8];
 
+/// Delivery semantics applied to frames on an LBTP channel.
+///
+/// All three classes are multiplexed on a single UDP five-tuple; the channel
+/// ID in the LBTP frame header is the sole differentiator.  The transport
+/// event loop emits frames from all classes through one [`Connection`] and
+/// one UDP socket — no parallel paths, no additional ports.
+///
+/// [`Connection`]: crate::connection::Connection
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DeliveryClass {
+    /// Fire-and-forget: frames are never retransmitted.
+    ///
+    /// Used by time-sensitive media (audio, screen-rt, video-rt, probes)
+    /// where a stale retransmission would arrive too late to be useful.
+    Realtime,
+    /// Reliable delivery with no ordering guarantee between frames.
+    ///
+    /// Used by bulk transfers (screen lossless, video reference frames,
+    /// file transfer) where each chunk is independently useful.
+    ReliableUnordered,
+    /// Reliable delivery in the order frames were sent.
+    ///
+    /// Used by control traffic (ctrl/ACK, cursor deltas, input events)
+    /// where the receiver must process frames in sequence.
+    ReliableOrdered,
+}
+
+/// Delivery class for each channel, indexed by [`ChannelId`]`.0`.
+///
+/// The mapping is fixed by the LBTP architecture spec §6.2 and must not
+/// change without a protocol version bump.
+pub const CHANNEL_DELIVERY_CLASS: [DeliveryClass; NUM_CHANNELS] = [
+    DeliveryClass::ReliableOrdered,   // 0  ctrl / ACK
+    DeliveryClass::Realtime,          // 1  audio
+    DeliveryClass::ReliableOrdered,   // 2  cursor
+    DeliveryClass::ReliableOrdered,   // 3  input events
+    DeliveryClass::Realtime,          // 4  screen-rt
+    DeliveryClass::Realtime,          // 5  video-rt
+    DeliveryClass::ReliableUnordered, // 6  reliable bulk (screen lossless, video ref)
+    DeliveryClass::ReliableUnordered, // 7  xfer / file transfer
+    DeliveryClass::Realtime,          // 8  probes (padding, first-to-drop)
+];
+
 /// A validated LBTP channel identifier (0–8 inclusive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChannelId(pub u8);
@@ -78,6 +121,11 @@ impl ChannelId {
     pub fn new(ch: u8) -> Self {
         debug_assert!((ch as usize) < NUM_CHANNELS, "channel {ch} out of range 0–8");
         Self(ch)
+    }
+
+    /// Delivery class assigned to this channel by the LBTP spec.
+    pub fn delivery_class(self) -> DeliveryClass {
+        CHANNEL_DELIVERY_CLASS[self.0 as usize]
     }
 }
 
@@ -356,6 +404,68 @@ mod tests {
 
     fn frame(ch: ChannelId, size: usize) -> PacerFrame {
         PacerFrame::new(ch, vec![0u8; size])
+    }
+
+    // ── Feature 9: DeliveryClass assignment ──────────────────────────────
+
+    #[test]
+    fn ctrl_channel_is_reliable_ordered() {
+        assert_eq!(CH_CTRL.delivery_class(), DeliveryClass::ReliableOrdered);
+    }
+
+    #[test]
+    fn audio_channel_is_realtime() {
+        assert_eq!(CH_AUDIO.delivery_class(), DeliveryClass::Realtime);
+    }
+
+    #[test]
+    fn cursor_channel_is_reliable_ordered() {
+        assert_eq!(CH_CURSOR.delivery_class(), DeliveryClass::ReliableOrdered);
+    }
+
+    #[test]
+    fn input_channel_is_reliable_ordered() {
+        assert_eq!(CH_INPUT.delivery_class(), DeliveryClass::ReliableOrdered);
+    }
+
+    #[test]
+    fn screen_rt_channel_is_realtime() {
+        assert_eq!(CH_SCREEN_RT.delivery_class(), DeliveryClass::Realtime);
+    }
+
+    #[test]
+    fn video_rt_channel_is_realtime() {
+        assert_eq!(CH_VIDEO_RT.delivery_class(), DeliveryClass::Realtime);
+    }
+
+    #[test]
+    fn reliable_bulk_channel_is_reliable_unordered() {
+        assert_eq!(CH_RELIABLE.delivery_class(), DeliveryClass::ReliableUnordered);
+    }
+
+    #[test]
+    fn xfer_channel_is_reliable_unordered() {
+        assert_eq!(CH_XFER.delivery_class(), DeliveryClass::ReliableUnordered);
+    }
+
+    #[test]
+    fn probes_channel_is_realtime() {
+        assert_eq!(CH_PROBES.delivery_class(), DeliveryClass::Realtime);
+    }
+
+    #[test]
+    fn all_three_delivery_classes_present_across_channels() {
+        let classes: Vec<_> = (0..NUM_CHANNELS as u8)
+            .map(|ch| ChannelId(ch).delivery_class())
+            .collect();
+        assert!(classes.contains(&DeliveryClass::Realtime));
+        assert!(classes.contains(&DeliveryClass::ReliableUnordered));
+        assert!(classes.contains(&DeliveryClass::ReliableOrdered));
+    }
+
+    #[test]
+    fn channel_delivery_class_table_covers_all_channels() {
+        assert_eq!(CHANNEL_DELIVERY_CLASS.len(), NUM_CHANNELS);
     }
 
     // ── PRIORITY_ORDER correctness ─────────────────────────────────────────

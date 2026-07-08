@@ -4,6 +4,7 @@
 //!
 //! | # | Feature |
 //! |---|---------|
+//! | 9  | three delivery classes (realtime / reliable-unordered / reliable-ordered) multiplexed on one five_tuple via the channel ID |
 //! | 10 | token_bucket pacing — every outbound packet passes through the pacer; no encoder burst floods the uplink queue |
 //! | 11 | wire_seq expansion — 16-bit wire field → full 47-bit sequence at the receiver |
 //! | 12 | path_challenge / path_response — migrates the session to a new path without renegotiation |
@@ -62,7 +63,8 @@ pub use fec::{
 };
 pub use connection::Connection;
 pub use pacer::{
-    ChannelId, Pacer, PacerAggregatedDatagram, PacerFrame, PRIORITY_ORDER,
+    ChannelId, DeliveryClass, CHANNEL_DELIVERY_CLASS,
+    Pacer, PacerAggregatedDatagram, PacerFrame, PRIORITY_ORDER,
     MAX_DATAGRAM_PAYLOAD_BYTES,
 };
 pub use path::{

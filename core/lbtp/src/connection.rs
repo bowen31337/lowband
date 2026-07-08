@@ -131,7 +131,7 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pacer::{ChannelId, PacerFrame, PRIORITY_ORDER, NUM_CHANNELS};
+    use crate::pacer::{ChannelId, DeliveryClass, PacerFrame, PRIORITY_ORDER, NUM_CHANNELS};
 
     const CH_CTRL: ChannelId = ChannelId(0);
     const CH_AUDIO: ChannelId = ChannelId(1);
@@ -145,6 +145,79 @@ mod tests {
     /// Nanoseconds required to earn `bytes` tokens at `rate_bps`.
     fn ns_for_bytes(bytes: usize, rate_bps: f64) -> u64 {
         ((bytes as f64) * 8_000_000_000.0 / rate_bps).ceil() as u64
+    }
+
+    // ── Feature 9: three delivery classes on one five_tuple ──────────────
+
+    // Canonical representatives for each delivery class.
+    // Realtime       → audio    (channel 1)
+    // ReliableUnordered → xfer (channel 7)
+    // ReliableOrdered → input  (channel 3)
+
+    #[test]
+    fn realtime_frame_exits_through_connection() {
+        let mut conn = Connection::new(10_000_000.0);
+        conn.enqueue(frame(CH_AUDIO, 80)); // realtime
+        let dg = conn.tick_ns(1_000_000).expect("realtime frame must be sent");
+        let ch = dg.frames[0].channel;
+        assert_eq!(ch.delivery_class(), DeliveryClass::Realtime);
+    }
+
+    #[test]
+    fn reliable_unordered_frame_exits_through_connection() {
+        let mut conn = Connection::new(10_000_000.0);
+        conn.enqueue(frame(CH_XFER, 200)); // reliable-unordered
+        let dg = conn.tick_ns(1_000_000).expect("reliable-unordered frame must be sent");
+        let ch = dg.frames[0].channel;
+        assert_eq!(ch.delivery_class(), DeliveryClass::ReliableUnordered);
+    }
+
+    #[test]
+    fn reliable_ordered_frame_exits_through_connection() {
+        let mut conn = Connection::new(10_000_000.0);
+        conn.enqueue(frame(CH_INPUT, 32)); // reliable-ordered
+        let dg = conn.tick_ns(1_000_000).expect("reliable-ordered frame must be sent");
+        let ch = dg.frames[0].channel;
+        assert_eq!(ch.delivery_class(), DeliveryClass::ReliableOrdered);
+    }
+
+    #[test]
+    fn all_three_delivery_classes_coalesce_into_one_datagram() {
+        // All three delivery classes enqueued simultaneously; one tick must drain
+        // them all into a single datagram — the single-five-tuple invariant.
+        let mut conn = Connection::new(10_000_000.0);
+        conn.enqueue(frame(CH_INPUT, 32));  // reliable-ordered
+        conn.enqueue(frame(CH_XFER, 100)); // reliable-unordered
+        conn.enqueue(frame(CH_AUDIO, 80)); // realtime
+
+        let dg = conn.tick_ns(1_000_000).expect("all three classes must be admitted");
+        assert_eq!(dg.frames.len(), 3, "one datagram carries all three delivery classes");
+
+        let classes: std::collections::HashSet<_> = dg.frames
+            .iter()
+            .map(|f| f.channel.delivery_class())
+            .collect();
+        assert!(classes.contains(&DeliveryClass::Realtime));
+        assert!(classes.contains(&DeliveryClass::ReliableUnordered));
+        assert!(classes.contains(&DeliveryClass::ReliableOrdered));
+    }
+
+    #[test]
+    fn three_class_datagram_priority_order_preserved() {
+        // When all three classes are in the same datagram, priority order
+        // must still hold: reliable-ordered (ctrl ch0) > reliable-ordered (input ch3) >
+        // realtime (audio ch1) > reliable-unordered (xfer ch7).
+        let mut conn = Connection::new(10_000_000.0);
+        conn.enqueue(frame(CH_XFER, 20));  // reliable-unordered, lowest priority
+        conn.enqueue(frame(CH_AUDIO, 20)); // realtime
+        conn.enqueue(frame(CH_INPUT, 20)); // reliable-ordered, high priority
+
+        let dg = conn.tick_ns(1_000_000).expect("all frames admitted");
+        assert_eq!(dg.frames.len(), 3);
+        // Priority order for these three channels: input(3) > audio(1) > xfer(7)
+        assert_eq!(dg.frames[0].channel.0, 3, "input first");
+        assert_eq!(dg.frames[1].channel.0, 1, "audio second");
+        assert_eq!(dg.frames[2].channel.0, 7, "xfer third");
     }
 
     // ── Construction ──────────────────────────────────────────────────────
