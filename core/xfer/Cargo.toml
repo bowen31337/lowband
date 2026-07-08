@@ -16,9 +16,11 @@ build = false
 [features]
 default = []
 fec = ["dep:raptorq"]
+# `hash` activates BLAKE3 + FastCDC for chunk identity hashing (Feature 103).
+# No C toolchain required — blake3 and fastcdc are pure-Rust builds.
+hash = ["dep:blake3", "dep:fastcdc"]
 full = [
-    "dep:blake3",
-    "dep:fastcdc",
+    "hash",
     "dep:raptorq",
     "dep:thiserror",
     "dep:zstd",

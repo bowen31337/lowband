@@ -24,7 +24,7 @@ pub mod hash;
 pub mod persistent_cache;
 pub mod scheduler;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "hash")]
 pub mod chunker;
 #[cfg(feature = "full")]
 pub mod compress;
@@ -35,13 +35,13 @@ pub use cache::{
     confirm_delivered, split_delta, ChunkCache, InMemoryChunkCache, TransferManifest,
 };
 pub use persistent_cache::PersistentChunkCache;
-pub use hash::ChunkId;
+pub use hash::ChunkHash;
 pub use scheduler::{
     AggregatedDatagram, BulkTransferScheduler, PacerDemand, TickResult, XferFrame,
     MAX_DATAGRAM_XFER_BYTES,
 };
 
-#[cfg(feature = "full")]
+#[cfg(feature = "hash")]
 pub use chunker::{chunk_data, FileChunk};
 #[cfg(feature = "full")]
 pub use compress::{
@@ -52,8 +52,8 @@ pub use compress::{
 pub use compress::decompress as decompress_chunk;
 #[cfg(any(feature = "full", feature = "fec"))]
 pub use fec::{FecDecoder, FecEncoder, RepairSender};
-#[cfg(feature = "full")]
-pub use hash::compute_id;
+#[cfg(feature = "hash")]
+pub use hash::compute_chunk_hash;
 
 // Feature 108 — validate the committed pre-trained dictionary artifacts.
 // These tests require no C deps and run in all feature configurations.

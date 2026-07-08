@@ -1,8 +1,8 @@
 //! Per-peer chunk dedup index — Features 104 & 105.
 //!
-//! The chunk cache records which [`ChunkId`]s a remote peer has already
+//! The chunk cache records which [`ChunkHash`]s a remote peer has already
 //! received.  Before transmitting a chunk, the sender queries the cache; a
-//! cache hit means only metadata (the `ChunkId`) needs to travel over the
+//! cache hit means only metadata (the `ChunkHash`) needs to travel over the
 //! wire — the remote can reconstruct the chunk from its local store.
 //!
 //! # Persistence
@@ -14,19 +14,19 @@
 //! layer and is injected at startup.  The [`InMemoryChunkCache`] provided
 //! here is used in tests and during a session before the first flush.
 
-use crate::hash::ChunkId;
+use crate::hash::ChunkHash;
 use std::collections::HashSet;
 
 /// Determines which chunks must be sent and which can be elided (Feature 105).
 pub trait ChunkCache {
     /// Returns `true` if the remote peer already holds this chunk.
-    fn contains(&self, id: &ChunkId) -> bool;
+    fn contains(&self, id: &ChunkHash) -> bool;
 
     /// Record that `id` has been successfully delivered to the remote peer.
-    fn insert(&mut self, id: ChunkId);
+    fn insert(&mut self, id: ChunkHash);
 
     /// Remove a chunk from the cache (e.g. after the peer signals eviction).
-    fn remove(&mut self, id: &ChunkId);
+    fn remove(&mut self, id: &ChunkHash);
 }
 
 /// In-process chunk dedup index backed by a [`HashSet`].
@@ -34,7 +34,7 @@ pub trait ChunkCache {
 /// Used for testing and as the session-local cache before SQLite is available.
 #[derive(Debug, Default)]
 pub struct InMemoryChunkCache {
-    known: HashSet<ChunkId>,
+    known: HashSet<ChunkHash>,
 }
 
 impl InMemoryChunkCache {
@@ -52,20 +52,20 @@ impl InMemoryChunkCache {
 }
 
 impl ChunkCache for InMemoryChunkCache {
-    fn contains(&self, id: &ChunkId) -> bool {
+    fn contains(&self, id: &ChunkHash) -> bool {
         self.known.contains(id)
     }
 
-    fn insert(&mut self, id: ChunkId) {
+    fn insert(&mut self, id: ChunkHash) {
         self.known.insert(id);
     }
 
-    fn remove(&mut self, id: &ChunkId) {
+    fn remove(&mut self, id: &ChunkHash) {
         self.known.remove(id);
     }
 }
 
-/// Ordered sequence of [`ChunkId`]s that describes a complete file payload.
+/// Ordered sequence of [`ChunkHash`]s that describes a complete file payload.
 ///
 /// The manifest is always transmitted to the remote peer so it can reconstruct
 /// the file's chunk ordering.  Data for chunks the peer already holds is
@@ -73,13 +73,13 @@ impl ChunkCache for InMemoryChunkCache {
 #[derive(Debug, Clone)]
 pub struct TransferManifest {
     /// Chunk IDs in file order.
-    pub chunk_ids: Vec<ChunkId>,
+    pub chunk_ids: Vec<ChunkHash>,
     /// Total uncompressed byte count of the source file.
     pub total_bytes: usize,
 }
 
 impl TransferManifest {
-    pub fn new(chunk_ids: Vec<ChunkId>, total_bytes: usize) -> Self {
+    pub fn new(chunk_ids: Vec<ChunkHash>, total_bytes: usize) -> Self {
         Self { chunk_ids, total_bytes }
     }
 
@@ -98,9 +98,9 @@ impl TransferManifest {
 /// Implements Feature 105: "send only metadata and deltas for a previously
 /// cached payload."
 pub fn split_delta<'a>(
-    chunks: impl Iterator<Item = &'a ChunkId>,
+    chunks: impl Iterator<Item = &'a ChunkHash>,
     cache: &dyn ChunkCache,
-) -> (Vec<ChunkId>, Vec<ChunkId>) {
+) -> (Vec<ChunkHash>, Vec<ChunkHash>) {
     let mut to_send = Vec::new();
     let mut already_cached = Vec::new();
 
@@ -119,7 +119,7 @@ pub fn split_delta<'a>(
 ///
 /// Call this after the receiver ACKs an object.  Inserts every ID into
 /// `cache` so subsequent transfers of the same payload skip these chunks.
-pub fn confirm_delivered(cache: &mut dyn ChunkCache, ids: &[ChunkId]) {
+pub fn confirm_delivered(cache: &mut dyn ChunkCache, ids: &[ChunkHash]) {
     for id in ids {
         cache.insert(*id);
     }
@@ -129,7 +129,7 @@ pub fn confirm_delivered(cache: &mut dyn ChunkCache, ids: &[ChunkId]) {
 mod tests {
     use super::*;
 
-    fn id(byte: u8) -> ChunkId {
+    fn id(byte: u8) -> ChunkHash {
         let mut arr = [0u8; 32];
         arr[0] = byte;
         arr
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn split_delta_all_cached_sends_nothing() {
         let mut cache = InMemoryChunkCache::new();
-        let ids: Vec<ChunkId> = (0u8..5).map(id).collect();
+        let ids: Vec<ChunkHash> = (0u8..5).map(id).collect();
         for cid in &ids {
             cache.insert(*cid);
         }
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn manifest_chunk_count_matches_ids() {
-        let ids: Vec<ChunkId> = (0u8..4).map(id).collect();
+        let ids: Vec<ChunkHash> = (0u8..4).map(id).collect();
         let m = TransferManifest::new(ids.clone(), 128 * 1024);
         assert_eq!(m.chunk_count(), 4);
         assert_eq!(m.total_bytes, 128 * 1024);
@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn confirm_delivered_inserts_all_ids() {
         let mut cache = InMemoryChunkCache::new();
-        let ids: Vec<ChunkId> = (10u8..15).map(id).collect();
+        let ids: Vec<ChunkHash> = (10u8..15).map(id).collect();
 
         confirm_delivered(&mut cache, &ids);
 
@@ -239,7 +239,7 @@ mod tests {
     fn second_transfer_sends_nothing_after_confirm_delivered() {
         // First transfer: all chunks are new.
         let mut cache = InMemoryChunkCache::new();
-        let ids: Vec<ChunkId> = (0u8..6).map(id).collect();
+        let ids: Vec<ChunkHash> = (0u8..6).map(id).collect();
 
         let (to_send, cached) = split_delta(ids.iter(), &cache);
         assert_eq!(to_send.len(), 6);
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn partial_delivery_sends_only_remaining_chunks() {
         let mut cache = InMemoryChunkCache::new();
-        let all_ids: Vec<ChunkId> = (0u8..5).map(id).collect();
+        let all_ids: Vec<ChunkHash> = (0u8..5).map(id).collect();
 
         // Deliver only the first three chunks.
         confirm_delivered(&mut cache, &all_ids[..3]);

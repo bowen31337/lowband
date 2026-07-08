@@ -8,7 +8,7 @@
 //! # File format
 //!
 //! ```text
-//! [1 byte tag: 0x01=insert | 0x00=remove][32 bytes BLAKE3 ChunkId]
+//! [1 byte tag: 0x01=insert | 0x00=remove][32 bytes BLAKE3 ChunkHash]
 //! ```
 //!
 //! Entries are replayed in order on open to reconstruct the live set.  A
@@ -33,7 +33,7 @@ use std::io::{self, BufReader, ErrorKind, Read, Write};
 use std::path::Path;
 
 use crate::cache::ChunkCache;
-use crate::hash::ChunkId;
+use crate::hash::ChunkHash;
 
 const TAG_INSERT: u8 = 0x01;
 const TAG_REMOVE: u8 = 0x00;
@@ -44,7 +44,7 @@ const ENTRY_LEN: usize = 33; // 1 tag + 32 hash bytes
 /// One instance is created per remote peer.  Construct with
 /// [`PersistentChunkCache::open`] pointing at a peer-specific path.
 pub struct PersistentChunkCache {
-    known: HashSet<ChunkId>,
+    known: HashSet<ChunkHash>,
     file: File,
     log_entries: usize,
 }
@@ -78,7 +78,7 @@ impl PersistentChunkCache {
 
     // ── internal helpers ─────────────────────────────────────────────────────
 
-    fn load(path: &Path) -> io::Result<(HashSet<ChunkId>, usize)> {
+    fn load(path: &Path) -> io::Result<(HashSet<ChunkHash>, usize)> {
         let mut known = HashSet::new();
         let mut count = 0usize;
 
@@ -93,7 +93,7 @@ impl PersistentChunkCache {
         loop {
             match reader.read_exact(&mut buf) {
                 Ok(()) => {
-                    let id: ChunkId = buf[1..].try_into().expect("slice is 32 bytes");
+                    let id: ChunkHash = buf[1..].try_into().expect("slice is 32 bytes");
                     if buf[0] == TAG_INSERT {
                         known.insert(id);
                     } else {
@@ -110,7 +110,7 @@ impl PersistentChunkCache {
         Ok((known, count))
     }
 
-    fn compact(path: &Path, live: &HashSet<ChunkId>) -> io::Result<File> {
+    fn compact(path: &Path, live: &HashSet<ChunkHash>) -> io::Result<File> {
         let mut file = File::create(path)?;
         let mut buf = [0u8; ENTRY_LEN];
         buf[0] = TAG_INSERT;
@@ -122,7 +122,7 @@ impl PersistentChunkCache {
         Ok(file)
     }
 
-    fn append_entry(&mut self, tag: u8, id: &ChunkId) {
+    fn append_entry(&mut self, tag: u8, id: &ChunkHash) {
         let mut buf = [0u8; ENTRY_LEN];
         buf[0] = tag;
         buf[1..].copy_from_slice(id);
@@ -133,17 +133,17 @@ impl PersistentChunkCache {
 }
 
 impl ChunkCache for PersistentChunkCache {
-    fn contains(&self, id: &ChunkId) -> bool {
+    fn contains(&self, id: &ChunkHash) -> bool {
         self.known.contains(id)
     }
 
-    fn insert(&mut self, id: ChunkId) {
+    fn insert(&mut self, id: ChunkHash) {
         if self.known.insert(id) {
             self.append_entry(TAG_INSERT, &id);
         }
     }
 
-    fn remove(&mut self, id: &ChunkId) {
+    fn remove(&mut self, id: &ChunkHash) {
         if self.known.remove(id) {
             self.append_entry(TAG_REMOVE, id);
         }
@@ -157,7 +157,7 @@ mod tests {
     use std::env;
     use std::path::PathBuf;
 
-    fn chunk(b: u8) -> ChunkId {
+    fn chunk(b: u8) -> ChunkHash {
         let mut id = [0u8; 32];
         id[0] = b;
         id
@@ -243,7 +243,7 @@ mod tests {
         let path = tmp_path("confirm");
         let _ = std::fs::remove_file(&path);
         let mut cache = PersistentChunkCache::open(&path).unwrap();
-        let ids: Vec<ChunkId> = (0u8..4).map(chunk).collect();
+        let ids: Vec<ChunkHash> = (0u8..4).map(chunk).collect();
 
         confirm_delivered(&mut cache, &ids);
         for id in &ids {

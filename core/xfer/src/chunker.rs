@@ -13,7 +13,7 @@
 //! average size is the operating point the rolling hash aims for; the min/max
 //! guard against degenerate files.
 
-use crate::hash::{compute_id, ChunkId};
+use crate::hash::{compute_chunk_hash, ChunkHash};
 
 /// Minimum chunk size (8 kB).
 pub const CHUNK_MIN: u32 = 8 * 1024;
@@ -29,8 +29,8 @@ pub struct FileChunk {
     pub offset: usize,
     /// Chunk payload.
     pub data: Vec<u8>,
-    /// BLAKE3 identity hash of `data`.
-    pub id: ChunkId,
+    /// BLAKE3 hash of `data` — used as the dedup key in the chunk cache.
+    pub chunk_hash: ChunkHash,
 }
 
 /// Split `source` into content-defined chunks using the FastCDC 2020 algorithm.
@@ -43,8 +43,8 @@ pub fn chunk_data(source: &[u8]) -> Vec<FileChunk> {
     FastCDC::new(source, CHUNK_MIN, CHUNK_AVG, CHUNK_MAX)
         .map(|chunk| {
             let data = source[chunk.offset..chunk.offset + chunk.length].to_vec();
-            let id = compute_id(&data);
-            FileChunk { offset: chunk.offset, data, id }
+            let chunk_hash = compute_chunk_hash(&data);
+            FileChunk { offset: chunk.offset, data, chunk_hash }
         })
         .collect()
 }
@@ -83,10 +83,10 @@ mod tests {
     }
 
     #[test]
-    fn chunk_id_matches_data() {
+    fn chunk_hash_matches_data() {
         let source: Vec<u8> = (0u8..=255).cycle().take(100 * 1024).collect();
         for chunk in chunk_data(&source) {
-            assert_eq!(chunk.id, compute_id(&chunk.data));
+            assert_eq!(chunk.chunk_hash, compute_chunk_hash(&chunk.data));
         }
     }
 
@@ -97,7 +97,7 @@ mod tests {
         let b = chunk_data(&source);
         assert_eq!(a.len(), b.len());
         for (ca, cb) in a.iter().zip(b.iter()) {
-            assert_eq!(ca.id, cb.id);
+            assert_eq!(ca.chunk_hash, cb.chunk_hash);
             assert_eq!(ca.offset, cb.offset);
         }
     }
