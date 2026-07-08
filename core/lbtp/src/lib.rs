@@ -4,6 +4,7 @@
 //!
 //! | # | Feature |
 //! |---|---------|
+//! | 2  | ice_candidate — gather host, server-reflexive, and relayed ICE candidates |
 //! | 3  | hole_punch — paced probes open a direct udp_path between peers |
 //! | 4  | nat_keepalive — hold bindings open with a jittered 15–25 s keepalive timer |
 //! | 9  | three delivery classes (realtime / reliable-unordered / reliable-ordered) multiplexed on one five_tuple via the channel ID |
@@ -43,6 +44,7 @@ pub mod connection;
 pub mod delay;
 pub mod fec;
 pub mod hole_punch;
+pub mod ice_candidate;
 pub mod mtu;
 pub mod nat_keepalive;
 pub mod pacer;
@@ -51,6 +53,14 @@ pub mod seq;
 pub mod tcp_fallback;
 pub mod turn_relay;
 
+pub use ice_candidate::{
+    IceCandidateGatherer, IceCandidateEvent, IceCandidateType, IceCandidate,
+    ice_priority,
+    ICE_HOST_TYPE_PREFERENCE, ICE_SRFLX_TYPE_PREFERENCE, ICE_RELAY_TYPE_PREFERENCE,
+    ICE_LOCAL_PREFERENCE_BASE,
+    ICE_STUN_TIMEOUT_TICKS, ICE_STUN_MAX_RETRIES,
+    ICE_TURN_TIMEOUT_TICKS, ICE_TURN_MAX_RETRIES,
+};
 pub use hole_punch::{
     HolePunchController, HolePunchEvent, HolePunchProbeFrame,
     HOLE_PUNCH_MAX_PROBES, HOLE_PUNCH_PROBE_INTERVAL_TICKS,
