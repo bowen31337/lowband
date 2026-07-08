@@ -76,10 +76,14 @@ impl Connection {
 
     /// Enqueue a frame for paced transmission.
     ///
-    /// The frame joins the channel's FIFO queue inside the pacer and will only
-    /// be emitted once the token bucket has sufficient balance.
-    pub fn enqueue(&mut self, frame: PacerFrame) {
-        self.pacer.enqueue(frame);
+    /// Returns `true` if the frame was accepted, or `false` if it was rejected
+    /// because `frame.data.len() > MAX_FRAME_DATA_BYTES` — the assembled datagram
+    /// would exceed the 1 200-byte ceiling (Feature 7).
+    ///
+    /// Accepted frames join the channel's FIFO queue and are emitted once the
+    /// token bucket has sufficient balance.
+    pub fn enqueue(&mut self, frame: PacerFrame) -> bool {
+        self.pacer.enqueue(frame)
     }
 
     /// Advance the token bucket by the elapsed wall-clock time and drain
@@ -131,7 +135,8 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pacer::{ChannelId, DeliveryClass, PacerFrame, PRIORITY_ORDER, NUM_CHANNELS};
+    use crate::pacer::{ChannelId, DeliveryClass, PacerFrame, PRIORITY_ORDER, NUM_CHANNELS,
+                        MAX_FRAME_DATA_BYTES};
 
     const CH_CTRL: ChannelId = ChannelId(0);
     const CH_AUDIO: ChannelId = ChannelId(1);
@@ -437,5 +442,29 @@ mod tests {
         conn.enqueue(frame(CH_AUDIO, 80));
         conn.tick_ns(1_000_000);
         assert_eq!(conn.pending_bytes(CH_AUDIO), 0);
+    }
+
+    // ── Feature 7: reject datagrams larger than 1 200 bytes ──────────────
+
+    #[test]
+    fn connection_enqueue_rejects_oversized_frame() {
+        let mut conn = Connection::new(10_000_000.0);
+        let oversized = PacerFrame::new(CH_AUDIO, vec![0u8; MAX_FRAME_DATA_BYTES]);
+        // Exact-limit frame: accepted.
+        assert!(conn.enqueue(oversized), "frame at limit must be accepted");
+
+        let too_big = PacerFrame { channel: CH_AUDIO, data: vec![0u8; MAX_FRAME_DATA_BYTES + 1] };
+        assert!(!conn.enqueue(too_big), "frame exceeding limit must be rejected");
+        assert_eq!(conn.total_queued_frames(), 1, "only the valid frame must be queued");
+    }
+
+    #[test]
+    fn connection_enqueue_accepted_frame_is_transmitted() {
+        let mut conn = Connection::new(10_000_000.0);
+        let max_frame = PacerFrame { channel: CH_AUDIO, data: vec![0u8; MAX_FRAME_DATA_BYTES] };
+        assert!(conn.enqueue(max_frame));
+        let dg = conn.tick_ns(1_000_000_000).expect("max-size frame must be sent");
+        assert_eq!(dg.frames.len(), 1);
+        assert_eq!(dg.frames[0].data.len(), MAX_FRAME_DATA_BYTES);
     }
 }

@@ -66,7 +66,7 @@ pub use connection::Connection;
 pub use pacer::{
     ChannelId, DeliveryClass, CHANNEL_DELIVERY_CLASS,
     Pacer, PacerAggregatedDatagram, PacerFrame, PRIORITY_ORDER,
-    MAX_DATAGRAM_PAYLOAD_BYTES,
+    MAX_DATAGRAM_PAYLOAD_BYTES, MAX_FRAME_DATA_BYTES,
 };
 pub use mtu::{
     MtuEvent, MtuProbeFrame, PathMtuController, MTU_BASE_BYTES, MTU_PROBE_MAX_RETRIES,

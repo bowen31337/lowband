@@ -58,6 +58,16 @@ const FRAME_HEADER_OVERHEAD: usize = 2;
 /// their data) in a single LBTP datagram.
 pub const MAX_DATAGRAM_PAYLOAD_BYTES: usize = 1200 - DATAGRAM_OVERHEAD;
 
+/// Maximum `data` bytes a single [`PacerFrame`] may carry.
+///
+/// A frame whose `data` length exceeds this value would produce a datagram
+/// larger than 1 200 bytes once the per-datagram overhead (19 B) and the
+/// per-frame header (2 B) are added.  Such frames are rejected at
+/// [`Pacer::enqueue`] time (Feature 7).
+///
+/// Derivation: `1 200 − DATAGRAM_OVERHEAD(19) − FRAME_HEADER_OVERHEAD(2) = 1 179`.
+pub const MAX_FRAME_DATA_BYTES: usize = MAX_DATAGRAM_PAYLOAD_BYTES - FRAME_HEADER_OVERHEAD;
+
 /// Canonical send-priority order for LBTP channels.
 ///
 /// Interpretation: lower index → higher priority.  Iterate this array on every
@@ -143,10 +153,11 @@ pub struct PacerFrame {
 impl PacerFrame {
     pub fn new(channel: ChannelId, data: Vec<u8>) -> Self {
         debug_assert!(
-            data.len() <= 1200,
-            "PacerFrame on channel {} exceeds LBTP MTU: {} bytes",
+            data.len() <= MAX_FRAME_DATA_BYTES,
+            "PacerFrame on channel {} exceeds per-frame data limit: {} > {} bytes",
             channel.0,
-            data.len()
+            data.len(),
+            MAX_FRAME_DATA_BYTES,
         );
         Self { channel, data }
     }
@@ -260,12 +271,20 @@ impl Pacer {
         self.token_bytes = (self.token_bytes + added).min(self.burst_cap_bytes);
     }
 
-    /// Enqueue a frame for transmission on the given channel.
+    /// Enqueue a frame for paced transmission on the given channel.
     ///
-    /// Frames are sent in FIFO order within each channel.  The caller is
-    /// responsible for ensuring `frame.data.len() <= 1200`.
-    pub fn enqueue(&mut self, frame: PacerFrame) {
+    /// Returns `true` if the frame was accepted, or `false` if it was rejected
+    /// because `frame.data.len() > MAX_FRAME_DATA_BYTES` — i.e. the assembled
+    /// datagram (19-byte envelope + 2-byte frame header + data) would exceed
+    /// the 1 200-byte ceiling (Feature 7).
+    ///
+    /// Accepted frames are sent in FIFO order within each channel.
+    pub fn enqueue(&mut self, frame: PacerFrame) -> bool {
+        if frame.data.len() > MAX_FRAME_DATA_BYTES {
+            return false;
+        }
         self.queues[frame.channel.0 as usize].push_back(frame);
+        true
     }
 
     /// Dequeue the highest-priority frame that fits within the token budget.
@@ -317,33 +336,39 @@ impl Pacer {
         let mut frames: Vec<PacerFrame> = Vec::new();
         let mut datagram_used: usize = 0;
 
-        loop {
-            let mut admitted = false;
+        // Each iteration of the outer loop either admits one frame or drops one
+        // oversized frame; it breaks when a full priority scan finds nothing to do.
+        'outer: loop {
             for &ch in &PRIORITY_ORDER {
                 let queue = &mut self.queues[ch as usize];
                 let Some(front) = queue.front() else { continue };
 
                 let token_needed = front.data.len() as f64;
                 if self.token_bytes < token_needed {
-                    continue; // insufficient tokens; try lower-priority channels
+                    continue; // insufficient tokens; try lower-priority channel
                 }
 
                 let slot = FRAME_HEADER_OVERHEAD + front.data.len();
-                // First frame always admitted (best-effort for near-MTU).
-                // Subsequent frames must fit within the datagram payload budget.
+
+                // Frame can never fit in a 1 200-byte datagram — drop it so it
+                // does not block lower-priority channels indefinitely (Feature 7).
+                if slot > MAX_DATAGRAM_PAYLOAD_BYTES {
+                    queue.pop_front();
+                    continue 'outer; // restart from highest priority
+                }
+
+                // Adding this frame would overflow the current datagram — try
+                // lower-priority channels that might be smaller.
                 if !frames.is_empty() && datagram_used + slot > MAX_DATAGRAM_PAYLOAD_BYTES {
-                    continue; // doesn't fit; try lower-priority channels
+                    continue;
                 }
 
                 self.token_bytes -= token_needed;
                 datagram_used += slot;
                 frames.push(queue.pop_front().unwrap());
-                admitted = true;
-                break; // restart from highest priority
+                continue 'outer; // restart from highest priority
             }
-            if !admitted {
-                break;
-            }
+            break; // full pass found nothing to admit or drop
         }
 
         if frames.is_empty() {
@@ -795,8 +820,8 @@ mod tests {
 
     #[test]
     fn drain_tick_stops_at_mtu() {
-        // 590-B frames: slot = 592 B. Two slots = 1 184 B > MAX_DATAGRAM_PAYLOAD_BYTES (1 181).
-        // First frame admitted unconditionally; second frame must not fit.
+        // 590-B frames: slot = 592 B (≤ MAX_DATAGRAM_PAYLOAD_BYTES 1 181 → first frame fits).
+        // Two slots = 1 184 B > 1 181 → second frame would overflow; it is deferred.
         let mut p = pacer_with_tokens(10_000);
         p.enqueue(frame(CH_AUDIO, 590));
         p.enqueue(frame(CH_AUDIO, 590));
@@ -903,5 +928,91 @@ mod tests {
             );
         }
         assert_eq!(p.total_queued_frames(), 0);
+    }
+
+    // ── Feature 7: reject datagrams larger than 1 200 bytes ──────────────
+
+    #[test]
+    fn max_frame_data_bytes_constant_fills_exactly_1200_byte_datagram() {
+        // DATAGRAM_OVERHEAD(19) + FRAME_HEADER_OVERHEAD(2) + MAX_FRAME_DATA_BYTES == 1 200.
+        assert_eq!(
+            DATAGRAM_OVERHEAD + FRAME_HEADER_OVERHEAD + MAX_FRAME_DATA_BYTES,
+            1200,
+            "a max-size frame must produce exactly a 1 200-byte datagram"
+        );
+    }
+
+    #[test]
+    fn enqueue_rejects_frame_exceeding_max_frame_data_bytes() {
+        let mut p = Pacer::new(10_000_000.0);
+        let oversized = PacerFrame { channel: CH_AUDIO, data: vec![0u8; MAX_FRAME_DATA_BYTES + 1] };
+        assert!(!p.enqueue(oversized), "frame exceeding max must be rejected");
+        assert_eq!(p.total_queued_frames(), 0, "queue must remain empty after rejection");
+    }
+
+    #[test]
+    fn enqueue_accepts_frame_at_exact_max_frame_data_bytes() {
+        let mut p = Pacer::new(10_000_000.0);
+        let max_frame = PacerFrame { channel: CH_AUDIO, data: vec![0u8; MAX_FRAME_DATA_BYTES] };
+        assert!(p.enqueue(max_frame), "frame at the exact limit must be accepted");
+        assert_eq!(p.total_queued_frames(), 1);
+    }
+
+    #[test]
+    fn enqueue_accepts_frame_one_byte_below_limit() {
+        let mut p = Pacer::new(10_000_000.0);
+        let near_max = PacerFrame { channel: CH_AUDIO, data: vec![0u8; MAX_FRAME_DATA_BYTES - 1] };
+        assert!(p.enqueue(near_max), "frame one byte below limit must be accepted");
+    }
+
+    #[test]
+    fn drain_tick_sends_max_frame_data_bytes_frame() {
+        // A MAX_FRAME_DATA_BYTES frame must be emitted; total datagram = 1 200 bytes.
+        let mut p = pacer_with_tokens(10_000);
+        let max_frame = PacerFrame { channel: CH_AUDIO, data: vec![0u8; MAX_FRAME_DATA_BYTES] };
+        assert!(p.enqueue(max_frame));
+        let agg = p.drain_tick().expect("max-size frame must be emitted");
+        assert_eq!(agg.frames.len(), 1);
+        assert_eq!(agg.frames[0].data.len(), MAX_FRAME_DATA_BYTES);
+        let total_datagram_bytes = DATAGRAM_OVERHEAD + FRAME_HEADER_OVERHEAD + agg.frames[0].data.len();
+        assert_eq!(total_datagram_bytes, 1200, "total datagram must be exactly 1 200 bytes");
+    }
+
+    #[test]
+    fn drain_tick_drops_oversized_frame_and_emits_valid_lower_priority() {
+        // An oversized frame inserted directly (bypassing enqueue) must be dropped
+        // by drain_tick; a valid lower-priority frame must still be emitted.
+        let mut p = pacer_with_tokens(10_000);
+        // Force an oversized frame onto the high-priority input channel.
+        p.queues[CH_INPUT.0 as usize].push_back(
+            PacerFrame { channel: CH_INPUT, data: vec![0u8; MAX_FRAME_DATA_BYTES + 1] },
+        );
+        // Valid audio frame on a lower-priority channel.
+        assert!(p.enqueue(PacerFrame::new(CH_AUDIO, vec![0u8; 80])));
+
+        let agg = p.drain_tick().expect("audio frame must be emitted");
+        assert_eq!(agg.frames.len(), 1, "only the valid audio frame must be in the datagram");
+        assert_eq!(agg.frames[0].channel.0, CH_AUDIO.0, "audio must be emitted");
+        assert_eq!(p.total_queued_frames(), 0, "oversized input frame must be dropped");
+    }
+
+    #[test]
+    fn drain_tick_drops_oversized_first_frame_returns_none_when_no_other_frames() {
+        // If the only queued frame is oversized, drain_tick must drop it and return None.
+        let mut p = pacer_with_tokens(10_000);
+        p.queues[CH_AUDIO.0 as usize].push_back(
+            PacerFrame { channel: CH_AUDIO, data: vec![0u8; MAX_FRAME_DATA_BYTES + 1] },
+        );
+        assert!(p.drain_tick().is_none(), "no valid frames remain after drop — must return None");
+        assert_eq!(p.total_queued_frames(), 0, "oversized frame must have been dropped");
+    }
+
+    #[test]
+    fn enqueue_rejected_frame_does_not_appear_in_drain_tick() {
+        let mut p = pacer_with_tokens(10_000);
+        // Rejection at enqueue means the frame must not appear later.
+        let rejected = PacerFrame { channel: CH_AUDIO, data: vec![0u8; MAX_FRAME_DATA_BYTES + 1] };
+        assert!(!p.enqueue(rejected));
+        assert!(p.drain_tick().is_none(), "no frame must be sent after rejection");
     }
 }
