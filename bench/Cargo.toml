@@ -1,0 +1,13 @@
+[package]
+name = "lowband-bench"
+version = "0.1.0"
+edition = "2021"
+description = "LowBand session-data and performance benchmarks"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+lowband-lbtp      = { path = "../core/lbtp" }
+lowband-platform  = { path = "../core/platform" }
