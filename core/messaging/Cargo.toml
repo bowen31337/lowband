@@ -1,0 +1,7 @@
+[package]
+name = "lowband-messaging"
+version = "0.1.0"
+edition = "2021"
+description = "LowBand clipboard sync and in-session chat — capability-gated messaging plugin"
+
+[dependencies]

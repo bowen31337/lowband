@@ -346,6 +346,10 @@ name = "lowband-lbtp"
 version = "0.1.0"
 
 [[package]]
+name = "lowband-messaging"
+version = "0.1.0"
+
+[[package]]
 name = "lowband-platform"
 version = "0.1.0"
 dependencies = [
