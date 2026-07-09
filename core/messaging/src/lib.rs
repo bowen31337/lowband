@@ -17,6 +17,7 @@ pub mod chat;
 pub mod clipboard;
 pub mod grants;
 pub mod panic_key;
+pub mod qos_observer;
 pub mod session_records;
 
 pub use audit::{AuditEntry, AuditLog};
@@ -34,4 +35,5 @@ pub use grants::{
     ViewGrant, ViewSession,
 };
 pub use panic_key::{PanicController, PanicEffect, PANIC_INJECTION_BLOCK_DEADLINE_MS};
+pub use qos_observer::QosSessionObserver;
 pub use session_records::{SessionRecord, SessionRecordStore, Tier};
