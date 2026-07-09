@@ -46,6 +46,7 @@ pub mod intra_refresh;
 pub mod ipc;
 pub mod keypoint_extractor;
 pub mod motion_encoder;
+pub mod neural_vocoder;
 pub mod reference_frame_sender;
 pub mod screen_capture;
 pub mod synthesis_network;
@@ -95,6 +96,10 @@ pub use synthesis_network::{
 };
 pub use jitter_buffer::{
     JitterBuffer, PlayoutAction, CONVERGENCE_ZONE_FRAMES, MAX_TIME_SCALE_RATE,
+};
+pub use neural_vocoder::{
+    audio_gear_from_tier_and_npu, AudioGear, NpuCapability,
+    NEURAL_VOCODER_HI_BPS, NEURAL_VOCODER_LO_BPS,
 };
 pub use opus_decoder::{
     lace_mode_from_cpu_pct, LaceMode, LACE_CPU_OVERHEAD_PCT, LACE_HEADROOM_THRESHOLD_PCT,
