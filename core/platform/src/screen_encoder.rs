@@ -1297,6 +1297,108 @@ fn extract_strip_pixels(
     out
 }
 
+// ── IdleSuppressor ────────────────────────────────────────────────────────────
+
+/// Heartbeat interval for a static screen in nanoseconds (Feature 87).
+///
+/// When the screen has not changed for one second the encoder emits a single
+/// heartbeat packet instead of frame data.  All other idle ticks carry zero
+/// content bytes.  The 1 Hz cadence lets the remote distinguish "idle session"
+/// from "dead connection" while consuming effectively zero bandwidth on an
+/// unchanged display.
+pub const SCREEN_HEARTBEAT_NS: u64 = 1_000_000_000;
+
+/// Per-tick decision returned by [`IdleSuppressor::observe`] (Feature 87).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenIdleAction {
+    /// The screen has dirty regions; encode and transmit frame data normally.
+    Send,
+    /// The screen is static; suppress all frame bytes for this tick (zero bytes).
+    Suppress,
+    /// The screen has been static for at least [`SCREEN_HEARTBEAT_NS`]; emit one
+    /// minimal heartbeat packet so the remote can distinguish idle from lost.
+    Heartbeat,
+}
+
+/// Idle suppressor for a static screen (Feature 87).
+///
+/// Accumulates elapsed nanoseconds during static epochs and fires a
+/// [`ScreenIdleAction::Heartbeat`] exactly once per [`SCREEN_HEARTBEAT_NS`]
+/// (1 second).  Every other idle tick returns [`ScreenIdleAction::Suppress`]
+/// (zero bytes).  Dirty ticks always return [`ScreenIdleAction::Send`] and
+/// reset the idle accumulator.
+///
+/// # Behaviour
+///
+/// | Screen state             | Action                   |
+/// |--------------------------|--------------------------|
+/// | Dirty rects present      | `Send`                   |
+/// | Static, idle < 1 s       | `Suppress` (zero bytes)  |
+/// | Static, idle crosses 1 s | `Heartbeat` (one per s)  |
+///
+/// # Usage
+///
+/// Call [`observe`](Self::observe) once per capture tick with the elapsed
+/// nanoseconds since the previous call and whether dirty rects were reported:
+///
+/// ```ignore
+/// let mut idle = IdleSuppressor::new();
+/// loop {
+///     let elapsed_ns = timer.elapsed_ns();
+///     let has_dirty  = !frame.dirty_rects.is_empty();
+///     match idle.observe(has_dirty, elapsed_ns) {
+///         ScreenIdleAction::Send      => encode_and_transmit(frame),
+///         ScreenIdleAction::Heartbeat => send_heartbeat(),
+///         ScreenIdleAction::Suppress  => {}
+///     }
+/// }
+/// ```
+pub struct IdleSuppressor {
+    /// Nanoseconds accumulated in the current idle epoch.  Resets to zero on
+    /// any dirty tick; decremented by [`SCREEN_HEARTBEAT_NS`] on each heartbeat.
+    idle_ns: u64,
+}
+
+impl IdleSuppressor {
+    /// Create a new suppressor with no accumulated idle time.
+    pub fn new() -> Self {
+        Self { idle_ns: 0 }
+    }
+
+    /// Observe one screen-capture tick.
+    ///
+    /// `has_dirty` — `true` when the OS reports at least one dirty rectangle
+    /// this tick.
+    ///
+    /// `elapsed_ns` — nanoseconds elapsed since the previous call (or since
+    /// construction for the first call).
+    pub fn observe(&mut self, has_dirty: bool, elapsed_ns: u64) -> ScreenIdleAction {
+        if has_dirty {
+            self.idle_ns = 0;
+            ScreenIdleAction::Send
+        } else {
+            self.idle_ns = self.idle_ns.saturating_add(elapsed_ns);
+            if self.idle_ns >= SCREEN_HEARTBEAT_NS {
+                self.idle_ns -= SCREEN_HEARTBEAT_NS;
+                ScreenIdleAction::Heartbeat
+            } else {
+                ScreenIdleAction::Suppress
+            }
+        }
+    }
+
+    /// Nanoseconds accumulated since the last dirty tick or heartbeat.
+    pub fn idle_ns(&self) -> u64 {
+        self.idle_ns
+    }
+}
+
+impl Default for IdleSuppressor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ── bits_per_index ────────────────────────────────────────────────────────────
 
 /// Bits needed to represent a palette index for a palette of size `n`.
