@@ -39,6 +39,7 @@ pub mod intra_refresh;
 #[cfg(feature = "ipc")]
 pub mod ipc;
 pub mod screen_capture;
+pub mod synthesis_network;
 pub mod temporal_svc;
 pub mod thermal;
 pub mod tier;
@@ -65,6 +66,11 @@ pub use gear_policy::{
     allocate, gear_b_preset_from_cpu_pct, select_resolution, Av1EncodeCapability, CameraGear,
     DisplayResolution, GearConstraints, StreamBudgets, AUDIO_FLOOR_BPS,
     CPU_PRESET10_THRESHOLD_PCT, CPU_PRESET11_THRESHOLD_PCT, RESOLUTION_LADDER, SCREEN_UPGRADE_BPS,
+};
+pub use synthesis_network::{
+    ExpressionLatents, HeadPose, HeadResolution, Keypoint3D, MotionLatents,
+    ReconstructedFrame, ReferenceFrame, SynthesisConfig, SynthesisError, SynthesisNetwork,
+    HEAD_PX_MAX, HEAD_PX_MIN, KEYPOINT_COUNT,
 };
 pub use thermal::{ThermalMonitor, ThermalPressure};
 pub use tier::TierState;
