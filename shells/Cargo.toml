@@ -1,0 +1,7 @@
+[package]
+name = "lowband-shells"
+version = "0.1.0"
+edition = "2021"
+description = "LowBand UI shell utilities — session summary and end-of-call display"
+
+[dependencies]

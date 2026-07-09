@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core/lbtp", "core/xfer", "core/platform", "core/lowbandd", "core/signaling", "core/messaging", "tests/e2e", "bench"]
+members = ["core/lbtp", "core/xfer", "core/platform", "core/lowbandd", "core/signaling", "core/messaging", "shells", "tests/e2e", "bench"]
 
 [workspace.package]
 version = "0.1.0"

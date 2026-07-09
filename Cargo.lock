@@ -369,6 +369,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "lowband-shells"
+version = "0.1.0"
+
+[[package]]
 name = "lowband-signaling"
 version = "0.1.0"
 dependencies = [
