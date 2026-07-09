@@ -1,7 +1,8 @@
-//! Observability — Features 134, 135, 136, 137.
+//! Observability — Features 133, 134, 135, 136, 137.
 //!
 //! | Module               | Feature | Description |
 //! |----------------------|---------|-------------|
+//! | [`quality_bar_lag`]  | 133 | Full quality-bar display-lag tracker: all four fields within 1 s |
 //! | [`quality_indicator`]| 134 | Governor-to-display sync tracker: asserts display matches governor within 1 s |
 //! | [`vmaf_sample`]      | 135 | VMAF-proxy probe: scores decoded camera frames for QoE |
 //! | [`ocr_probe`]        | 136 | OCR-legibility probe: scores decoded screen frames |
@@ -17,6 +18,7 @@
 //! before any network connection is opened.
 
 pub mod ocr_probe;
+pub mod quality_bar_lag;
 pub mod quality_indicator;
 pub mod sender;
 pub mod telemetry;
