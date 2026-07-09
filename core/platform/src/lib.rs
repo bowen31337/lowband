@@ -43,6 +43,7 @@ pub mod agc;
 pub mod collapse_audio;
 pub mod echo_canceller;
 pub mod governor_load_shed;
+pub mod governor_summary;
 pub mod cpu_ceiling;
 pub mod cursor_sender;
 pub mod mic_capture;
@@ -209,6 +210,10 @@ pub use plc_chain::{
     COMFORT_NOISE_FADE_FRAMES, DRED_DEPTH_FRAMES, NEURAL_PLC_MAX_FRAMES,
 };
 pub use governor_load_shed::{bulk_xfer_frozen, bulk_xfer_headroom_bps};
+pub use governor_summary::{
+    converge_summaries, ConvergedSummary, GovernorSummary,
+    LOSS_PPM_SCALE, SUMMARY_INTERVAL_MS,
+};
 pub use stream_drop_policy::{DropPolicy, StreamDropPolicy, StreamKind};
 pub use thermal::{ThermalMonitor, ThermalPressure};
 pub use tier::TierState;
