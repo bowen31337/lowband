@@ -34,6 +34,7 @@ const TURN_TTL_SECS: u64 = 86_400;
 pub struct AppState {
     session_codes: sled::Tree,
     ice_candidates: sled::Tree,
+    offers: sled::Tree,
     turn_urls: Arc<Vec<String>>,
     turn_secret: Arc<String>,
 }
@@ -54,6 +55,7 @@ impl AppState {
         Self {
             session_codes: db.open_tree("session_codes").expect("open tree"),
             ice_candidates: db.open_tree("ice_candidates").expect("open tree"),
+            offers: db.open_tree("offers").expect("open tree"),
             turn_urls: Arc::new(vec!["turn:turn.example.com:3478".into()]),
             turn_secret: Arc::new("test-secret".into()),
         }
@@ -65,6 +67,7 @@ impl AppState {
         Ok(Self {
             session_codes: db.open_tree("session_codes")?,
             ice_candidates: db.open_tree("ice_candidates")?,
+            offers: db.open_tree("offers")?,
             turn_urls: Arc::new(turn_urls),
             turn_secret: Arc::new(turn_secret),
         })
@@ -78,6 +81,15 @@ impl AppState {
             .filter_map(|r| r.ok())
             .filter_map(|(_, v)| String::from_utf8(v.to_vec()).ok())
             .collect()
+    }
+
+    /// Returns the pending SDP offer for `session_code`, if one has been posted.
+    pub fn pending_offer(&self, session_code: &str) -> Option<String> {
+        self.offers
+            .get(session_code.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|v| String::from_utf8(v.to_vec()).ok())
     }
 }
 
@@ -156,10 +168,15 @@ async fn get_join(
     }
 }
 
-// Shared body shape for offer / answer — any extra fields are ignored.
 #[derive(Deserialize)]
 struct CodedBody {
     session_code: String,
+}
+
+#[derive(Deserialize)]
+struct OfferBody {
+    session_code: String,
+    sdp: String,
 }
 
 #[derive(Deserialize)]
@@ -170,9 +187,12 @@ struct CandidateBody {
 
 async fn post_offer(
     State(st): State<AppState>,
-    Json(b): Json<CodedBody>,
+    Json(b): Json<OfferBody>,
 ) -> Result<StatusCode, StatusCode> {
     check_code(&st, &b.session_code)?;
+    st.offers
+        .insert(b.session_code.as_bytes(), b.sdp.as_bytes())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::OK)
 }
 
