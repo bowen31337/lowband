@@ -1953,6 +1953,271 @@ impl EntropyPaletteDecoder {
     }
 }
 
+// ── xxHash3-64 ────────────────────────────────────────────────────────────────
+
+// Default 192-byte secret from the xxHash3 specification.
+const XXH3_SECRET: [u8; 192] = [
+    0xb8, 0xfe, 0x6c, 0x39, 0x23, 0xa4, 0x4b, 0xbe,
+    0x7c, 0x01, 0x81, 0x2c, 0xf7, 0x21, 0xad, 0x1c,
+    0xde, 0xd4, 0x6d, 0xe9, 0x83, 0x90, 0x97, 0xdb,
+    0x72, 0x40, 0xa4, 0xa4, 0xb7, 0xb3, 0x67, 0x1f,
+    0xcb, 0x79, 0xe6, 0x4e, 0xcc, 0xc0, 0xe5, 0x78,
+    0x82, 0x5a, 0xd0, 0x7d, 0xcc, 0xff, 0x72, 0x21,
+    0xb8, 0x08, 0x46, 0x74, 0xf7, 0x43, 0x24, 0x8e,
+    0xe0, 0x35, 0x90, 0xec, 0xd7, 0xd7, 0x34, 0xbf,
+    0x52, 0x1c, 0xe9, 0x8f, 0x46, 0xd6, 0x5c, 0x6e,
+    0xeb, 0x9e, 0xc5, 0x04, 0xf0, 0xe7, 0xc4, 0x47,
+    0x55, 0x4b, 0x77, 0xad, 0x4b, 0xcf, 0x09, 0xf2,
+    0x9b, 0x6e, 0x04, 0x5f, 0x49, 0xc3, 0xd5, 0xf6,
+    0xae, 0x30, 0x6e, 0x2c, 0x9e, 0x0e, 0x1a, 0x75,
+    0xf0, 0xd1, 0x0c, 0x22, 0xfa, 0x7c, 0x39, 0xeb,
+    0x62, 0x2a, 0xdc, 0x6d, 0x1f, 0x0f, 0xf6, 0xf7,
+    0x96, 0xf2, 0x76, 0x7b, 0x5e, 0xa0, 0x3a, 0x07,
+    0x05, 0x08, 0x73, 0x78, 0xe8, 0x20, 0xdc, 0xc6,
+    0x82, 0xad, 0xc5, 0x25, 0xc2, 0x58, 0xdc, 0x59,
+    0x7f, 0xc6, 0xeb, 0x5b, 0x10, 0xb6, 0x3f, 0x38,
+    0xc1, 0xef, 0x10, 0x9a, 0xca, 0x20, 0x82, 0xdb,
+    0x29, 0x76, 0x38, 0x3e, 0xe5, 0xf3, 0x1d, 0xe3,
+    0x20, 0x9e, 0x40, 0x97, 0x3a, 0x63, 0x99, 0x22,
+    0x7e, 0xc6, 0x79, 0x2e, 0xc6, 0x5b, 0x1a, 0xe2,
+    0x15, 0xe2, 0xa3, 0x14, 0x61, 0xef, 0x3c, 0xb9,
+];
+
+const XXH3_PRIME64_1: u64 = 0x9E3779B185EBCA87;
+const XXH3_PRIME64_2: u64 = 0xC2B2AE3D27D4EB4F;
+const XXH3_PRIME64_3: u64 = 0x165667B19E3779F9;
+const XXH3_PRIME64_4: u64 = 0x85EBCA77C2B2AE63;
+const XXH3_PRIME64_5: u64 = 0x27D4EB2F165667C5;
+const XXH3_PRIME32_1: u64 = 0x9E3779B1;
+const XXH3_PRIME32_2: u64 = 0x85EBCA77;
+const XXH3_PRIME32_3: u64 = 0xC2B2AE3D;
+
+#[inline(always)]
+fn xxh3_read_u64(src: &[u8], off: usize) -> u64 {
+    u64::from_le_bytes(src[off..off + 8].try_into().unwrap())
+}
+
+#[inline(always)]
+fn xxh3_mul128_fold64(lhs: u64, rhs: u64) -> u64 {
+    let p = (lhs as u128) * (rhs as u128);
+    ((p >> 64) as u64) ^ (p as u64)
+}
+
+#[inline(always)]
+fn xxh3_avalanche(mut h: u64) -> u64 {
+    h ^= h >> 37;
+    h = h.wrapping_mul(0x165667919E3779F9);
+    h ^= h >> 32;
+    h
+}
+
+fn xxh3_accumulate_stripe(acc: &mut [u64; 8], data: &[u8], d_off: usize, s_off: usize) {
+    for i in 0..8 {
+        let dv = xxh3_read_u64(data, d_off + i * 8);
+        let dk = dv ^ xxh3_read_u64(&XXH3_SECRET, s_off + i * 8);
+        acc[i ^ 1] = acc[i ^ 1].wrapping_add(dv);
+        // XXH_mult32to64: treat both 32-bit halves of dk as u32, then multiply
+        acc[i] = acc[i].wrapping_add((dk & 0xFFFF_FFFF).wrapping_mul(dk >> 32));
+    }
+}
+
+fn xxh3_scramble(acc: &mut [u64; 8], s_off: usize) {
+    for i in 0..8 {
+        let mut a = acc[i];
+        a ^= a >> 47;
+        a ^= xxh3_read_u64(&XXH3_SECRET, s_off + i * 8);
+        a = a.wrapping_mul(XXH3_PRIME32_1);
+        acc[i] = a;
+    }
+}
+
+fn xxh3_merge_accs(acc: &[u64; 8], len: u64) -> u64 {
+    // Secret offset for merge: XXH_SECRET_MERGEACCS_START = 11 * 8 = 88
+    let mut result = len.wrapping_mul(XXH3_PRIME64_1);
+    for i in 0..4 {
+        let mix = xxh3_mul128_fold64(
+            acc[2 * i]     ^ xxh3_read_u64(&XXH3_SECRET, 88 + i * 16),
+            acc[2 * i + 1] ^ xxh3_read_u64(&XXH3_SECRET, 96 + i * 16),
+        );
+        result = result.wrapping_add(mix);
+    }
+    xxh3_avalanche(result)
+}
+
+/// xxHash3-64 digest of `data`.
+///
+/// Implements the canonical xxHash3 algorithm (long-input path, ≥ 240 bytes)
+/// using the default 192-byte secret.  Used by [`TileDiffDetector`] to compare
+/// 4096-byte BGRA8 tiles between frames (Feature 86).
+pub(crate) fn xxhash3_64(data: &[u8]) -> u64 {
+    let len = data.len();
+    debug_assert!(len >= 240, "xxhash3_64: input must be ≥ 240 bytes");
+
+    // nbStripesPerBlock = (192 − 64) / 8 = 16  →  block_len = 1024 bytes.
+    const BLOCK_LEN:        usize = 1024;
+    const STRIPES_PER_BLOCK: usize = 16;
+    const SECRET_STEP:      usize = 8;   // SECRET_CONSUME_RATE
+    const SCRAMBLE_OFF:     usize = 128; // 192 − 64
+    const LAST_STRIPE_OFF:  usize = 121; // 192 − 64 − 7 (XXH_SECRET_LASTACC_START = 7)
+
+    let mut acc: [u64; 8] = [
+        XXH3_PRIME32_3, XXH3_PRIME64_1, XXH3_PRIME64_2, XXH3_PRIME64_3,
+        XXH3_PRIME64_4, XXH3_PRIME32_2, XXH3_PRIME64_5, XXH3_PRIME32_1,
+    ];
+
+    let nb_blocks = (len - 1) / BLOCK_LEN;
+
+    for block in 0..nb_blocks {
+        for stripe in 0..STRIPES_PER_BLOCK {
+            xxh3_accumulate_stripe(&mut acc, data,
+                block * BLOCK_LEN + stripe * 64,
+                stripe * SECRET_STEP);
+        }
+        xxh3_scramble(&mut acc, SCRAMBLE_OFF);
+    }
+
+    // Last partial block.
+    let block_start = nb_blocks * BLOCK_LEN;
+    let n_stripes   = ((len - 1) - block_start) / 64;
+    for stripe in 0..n_stripes {
+        xxh3_accumulate_stripe(&mut acc, data,
+            block_start + stripe * 64,
+            stripe * SECRET_STEP);
+    }
+
+    // Last stripe (always present; may overlap with the partial-block stripes
+    // when len is not a multiple of 64, but for TILE_BYTES=4096 it is adjacent).
+    xxh3_accumulate_stripe(&mut acc, data, len - 64, LAST_STRIPE_OFF);
+
+    xxh3_merge_accs(&acc, len as u64)
+}
+
+// ── TileDiffDetector ──────────────────────────────────────────────────────────
+
+/// Per-tile xxHash3-64 change detector for the OS-damage fallback (Feature 86).
+///
+/// When the OS capture backend returns an empty `dirty_rects` list (ScreenCaptureKit
+/// after stream start, some PipeWire sources, headless environments), the caller
+/// invokes [`detect`](Self::detect) instead of using the OS rects directly.
+/// The detector compares each 32×32 tile of the current frame against the stored
+/// digest of the previous frame; only tiles whose digest changed are returned.
+///
+/// # First-call behaviour
+///
+/// All tile digests are initialised to zero.  Since no real 32×32 BGRA8 tile
+/// hashes to zero with xxHash3, the first `detect` call returns every tile as
+/// dirty — the correct conservative behaviour when no prior frame exists.
+///
+/// # Usage
+///
+/// ```ignore
+/// let mut detector = TileDiffDetector::new(1920, 1080);
+///
+/// loop {
+///     let frame = broker.acquire_frame()?;
+///     let dirty = if frame.dirty_rects.is_empty() {
+///         detector.detect(&frame.pixels, frame.stride)
+///     } else {
+///         detector.update_hashes(&frame.pixels, frame.stride);
+///         frame.dirty_rects.clone()
+///     };
+///     // … route dirty rects through the tile encoder …
+/// }
+/// ```
+pub struct TileDiffDetector {
+    /// Per-tile xxHash3-64 digests from the most recent frame.
+    /// Index: `row * cols + col`.
+    prev_hashes:  Vec<u64>,
+    cols:         u32,
+    rows:         u32,
+    frame_width:  u32,
+    frame_height: u32,
+}
+
+impl TileDiffDetector {
+    /// Create a new detector for frames of the given pixel dimensions.
+    pub fn new(frame_width: u32, frame_height: u32) -> Self {
+        let grid = TileGrid::new(frame_width, frame_height);
+        let n    = (grid.cols * grid.rows) as usize;
+        Self {
+            prev_hashes:  vec![0u64; n],
+            cols:         grid.cols,
+            rows:         grid.rows,
+            frame_width,
+            frame_height,
+        }
+    }
+
+    /// Compare every tile against the stored previous-frame digest.
+    ///
+    /// Returns one [`crate::screen_capture::DirtyRect`] per changed tile (in
+    /// tile-grid coordinates, width and height equal to [`TILE_SIZE_PX`]).
+    /// Updates the stored digests so the next call uses the current frame as the
+    /// reference.
+    ///
+    /// `pixels` must be BGRA8 with row stride `stride` bytes.
+    pub fn detect(
+        &mut self,
+        pixels: &[u8],
+        stride: u32,
+    ) -> Vec<crate::screen_capture::DirtyRect> {
+        use crate::screen_capture::DirtyRect;
+
+        let grid  = TileGrid::new(self.frame_width, self.frame_height);
+        let mut dirty = Vec::new();
+
+        for row in 0..self.rows {
+            for col in 0..self.cols {
+                let coord = TileCoord { col, row };
+                let tile  = grid.extract_tile(pixels, stride, coord);
+                let hash  = xxhash3_64(&tile);
+                let idx   = (row * self.cols + col) as usize;
+                if self.prev_hashes[idx] != hash {
+                    self.prev_hashes[idx] = hash;
+                    dirty.push(DirtyRect {
+                        x:      (col * TILE_SIZE_PX) as i32,
+                        y:      (row * TILE_SIZE_PX) as i32,
+                        width:  TILE_SIZE_PX,
+                        height: TILE_SIZE_PX,
+                    });
+                }
+            }
+        }
+
+        dirty
+    }
+
+    /// Update stored digests from `pixels` without returning a diff list.
+    ///
+    /// Call this on frames that do have OS-supplied dirty rects, so that the
+    /// next damage-less frame has an accurate reference to compare against.
+    pub fn update_hashes(&mut self, pixels: &[u8], stride: u32) {
+        let grid = TileGrid::new(self.frame_width, self.frame_height);
+        for row in 0..self.rows {
+            for col in 0..self.cols {
+                let coord = TileCoord { col, row };
+                let tile  = grid.extract_tile(pixels, stride, coord);
+                let idx   = (row * self.cols + col) as usize;
+                self.prev_hashes[idx] = xxhash3_64(&tile);
+            }
+        }
+    }
+
+    /// Reset all stored digests to zero.
+    ///
+    /// The next [`detect`](Self::detect) call will return every tile as dirty.
+    /// Call when the capture surface is recreated or resized.
+    pub fn reset(&mut self) {
+        self.prev_hashes.iter_mut().for_each(|h| *h = 0);
+    }
+
+    /// Number of tile columns in the grid.
+    pub fn cols(&self) -> u32 { self.cols }
+
+    /// Number of tile rows in the grid.
+    pub fn rows(&self) -> u32 { self.rows }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2514,5 +2779,148 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── xxhash3_64 ────────────────────────────────────────────────────────────
+
+    fn tile_filled(fill: u8) -> [u8; TILE_BYTES] {
+        [fill; TILE_BYTES]
+    }
+
+    #[test]
+    fn xxhash3_same_data_same_digest() {
+        let a = xxhash3_64(&tile_filled(0xAB));
+        let b = xxhash3_64(&tile_filled(0xAB));
+        assert_eq!(a, b, "identical tiles must produce the same digest");
+    }
+
+    #[test]
+    fn xxhash3_different_data_different_digest() {
+        let a = xxhash3_64(&tile_filled(0x00));
+        let b = xxhash3_64(&tile_filled(0xFF));
+        assert_ne!(a, b, "tiles with different fill values must produce different digests");
+    }
+
+    #[test]
+    fn xxhash3_single_byte_change_changes_digest() {
+        let mut data = tile_filled(0x00);
+        let before = xxhash3_64(&data);
+        data[42] ^= 0x01;
+        let after = xxhash3_64(&data);
+        assert_ne!(before, after, "a single-bit change must change the digest");
+    }
+
+    #[test]
+    fn xxhash3_nonzero_for_all_zero_tile() {
+        let digest = xxhash3_64(&tile_filled(0x00));
+        assert_ne!(digest, 0, "xxHash3 of an all-zero tile must be non-zero");
+    }
+
+    // ── TileDiffDetector ─────────────────────────────────────────────────────
+
+    fn make_frame(w: u32, h: u32, fill: u8) -> Vec<u8> {
+        vec![fill; (w * h * 4) as usize]
+    }
+
+    #[test]
+    fn tile_diff_first_call_returns_all_tiles_dirty() {
+        let (w, h) = (64u32, 64u32);
+        let mut det = TileDiffDetector::new(w, h);
+        let frame   = make_frame(w, h, 0xAB);
+        let dirty   = det.detect(&frame, w * 4);
+        // 64×64 at tile_size=32 → 2×2 = 4 tiles; all must be dirty on first call.
+        assert_eq!(dirty.len(), 4, "first detect must return all tiles dirty");
+    }
+
+    #[test]
+    fn tile_diff_second_identical_frame_returns_no_dirty() {
+        let (w, h) = (64u32, 64u32);
+        let mut det = TileDiffDetector::new(w, h);
+        let frame   = make_frame(w, h, 0xAB);
+        det.detect(&frame, w * 4);
+        let dirty = det.detect(&frame, w * 4);
+        assert!(
+            dirty.is_empty(),
+            "identical frame on second detect must yield zero dirty tiles; got {}",
+            dirty.len()
+        );
+    }
+
+    #[test]
+    fn tile_diff_single_changed_tile_returns_one_dirty() {
+        let (w, h) = (64u32, 64u32);
+        let stride  = w * 4;
+        let mut det = TileDiffDetector::new(w, h);
+
+        let frame0 = make_frame(w, h, 0x00);
+        det.detect(&frame0, stride);
+
+        // Modify only tile (1, 0): x=32..64, y=0..32.
+        let mut frame1 = frame0.clone();
+        for y in 0u32..32 {
+            for x in 32u32..64 {
+                let off = (y * stride + x * 4) as usize;
+                frame1[off] = 0xFF;
+            }
+        }
+
+        let dirty = det.detect(&frame1, stride);
+        assert_eq!(dirty.len(), 1, "only tile (1,0) changed; expected 1 dirty rect");
+        assert_eq!(dirty[0].x, 32, "dirty rect must start at tile (1,0) x=32");
+        assert_eq!(dirty[0].y,  0, "dirty rect must start at tile (1,0) y=0");
+        assert_eq!(dirty[0].width,  TILE_SIZE_PX);
+        assert_eq!(dirty[0].height, TILE_SIZE_PX);
+    }
+
+    #[test]
+    fn tile_diff_reset_makes_all_tiles_dirty_again() {
+        let (w, h) = (64u32, 64u32);
+        let mut det = TileDiffDetector::new(w, h);
+        let frame   = make_frame(w, h, 0xAB);
+        det.detect(&frame, w * 4);                     // first: all dirty
+        assert!(det.detect(&frame, w * 4).is_empty()); // second: none dirty
+        det.reset();
+        let after_reset = det.detect(&frame, w * 4);   // post-reset: all dirty again
+        assert_eq!(after_reset.len(), 4, "reset must restore all-dirty behaviour");
+    }
+
+    #[test]
+    fn tile_diff_dirty_rects_align_to_tile_boundaries() {
+        let (w, h) = (128u32, 64u32);
+        let stride  = w * 4;
+        let mut det = TileDiffDetector::new(w, h);
+
+        let frame0 = make_frame(w, h, 0x00);
+        det.detect(&frame0, stride);
+
+        let mut frame1 = frame0.clone();
+        // Change tile (2, 1): x=64..96, y=32..64.
+        for y in 32u32..64 {
+            for x in 64u32..96 {
+                frame1[(y * stride + x * 4) as usize] ^= 0x01;
+            }
+        }
+
+        let dirty = det.detect(&frame1, stride);
+        assert_eq!(dirty.len(), 1);
+        let r = &dirty[0];
+        assert_eq!(r.x % TILE_SIZE_PX as i32, 0, "dirty rect x must align to tile boundary");
+        assert_eq!(r.y % TILE_SIZE_PX as i32, 0, "dirty rect y must align to tile boundary");
+        assert_eq!(r.width,  TILE_SIZE_PX, "dirty rect width must be one tile");
+        assert_eq!(r.height, TILE_SIZE_PX, "dirty rect height must be one tile");
+    }
+
+    #[test]
+    fn tile_diff_update_hashes_keeps_state_consistent() {
+        // update_hashes on frame A, then detect frame A → no dirty tiles.
+        let (w, h) = (64u32, 64u32);
+        let mut det = TileDiffDetector::new(w, h);
+        let frame   = make_frame(w, h, 0x55);
+        det.update_hashes(&frame, w * 4);
+        let dirty = det.detect(&frame, w * 4);
+        assert!(
+            dirty.is_empty(),
+            "after update_hashes with frame A, detecting frame A must yield zero dirty tiles"
+        );
     }
 }

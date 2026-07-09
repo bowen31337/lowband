@@ -136,6 +136,7 @@ pub use screen_encoder::{
     SCROLL_CONFIDENCE_THRESHOLD, SCROLL_MAX_SMALL_SHIFT, SCROLL_MIN_REGION_PX,
     merge_damage_rects, DAMAGE_MERGE_RATIO,
     IdleSuppressor, ScreenIdleAction, SCREEN_HEARTBEAT_NS,
+    TileDiffDetector,
 };
 pub use gear_policy::{
     allocate, gear_b_preset_from_cpu_pct, select_resolution, Av1EncodeCapability, CameraGear,
