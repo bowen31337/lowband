@@ -616,6 +616,469 @@ impl Default for VideoSubStream {
     }
 }
 
+// ── BlitCommand ───────────────────────────────────────────────────────────────
+
+/// 16-byte wire command emitted when a scroll is detected (Feature 90).
+///
+/// Tells the remote renderer to:
+///
+/// 1. **Blit** (copy within its framebuffer) the `region`, shifted by `(dx, dy)`.
+/// 2. **Paint** the newly exposed strip with the pixel data that accompanies
+///    this command (see [`BlitResult::exposed_strip`]).
+///
+/// # Wire layout — little-endian, 16 bytes total
+///
+/// ```text
+///  0– 1  region_x  i16  left edge of the scrolled region (screen pixels)
+///  2– 3  region_y  i16  top  edge of the scrolled region (screen pixels)
+///  4– 5  region_w  u16  width  of the scrolled region (pixels)
+///  6– 7  region_h  u16  height of the scrolled region (pixels)
+///  8– 9  dx        i16  horizontal content displacement (+ = moved right)
+/// 10–11  dy        i16  vertical   content displacement (+ = moved down)
+/// 12–13  strip_w   u16  width  of the newly exposed strip (pixels)
+/// 14–15  strip_h   u16  height of the newly exposed strip (pixels)
+/// ```
+///
+/// # Exposed-strip position
+///
+/// The origin of the exposed strip is derived from the other fields (see
+/// [`strip_origin`](Self::strip_origin)):
+///
+/// | Condition | Strip origin              |
+/// |-----------|---------------------------|
+/// | `dy < 0`  | bottom of region: `(region_x, region_y + region_h + dy)` |
+/// | `dy > 0`  | top    of region: `(region_x, region_y)`                 |
+/// | `dx < 0`  | right  of region: `(region_x + region_w + dx, region_y)` |
+/// | `dx > 0`  | left   of region: `(region_x, region_y)`                 |
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlitCommand {
+    /// Left edge of the scrolled region in screen pixels.
+    pub region_x: i16,
+    /// Top edge of the scrolled region in screen pixels.
+    pub region_y: i16,
+    /// Width of the scrolled region in pixels.
+    pub region_w: u16,
+    /// Height of the scrolled region in pixels.
+    pub region_h: u16,
+    /// Horizontal content displacement in pixels.
+    ///
+    /// Positive: content moved right; exposed strip is on the **left**.
+    /// Negative: content moved left; exposed strip is on the **right**.
+    /// Zero for pure vertical scrolls.
+    pub dx: i16,
+    /// Vertical content displacement in pixels.
+    ///
+    /// Positive: content moved down; exposed strip is at the **top**.
+    /// Negative: content moved up; exposed strip is at the **bottom**.
+    /// Zero for pure horizontal scrolls.
+    pub dy: i16,
+    /// Width of the exposed strip in pixels.
+    pub strip_w: u16,
+    /// Height of the exposed strip in pixels.
+    pub strip_h: u16,
+}
+
+const _BLIT_COMMAND_SIZE: () = assert!(
+    std::mem::size_of::<BlitCommand>() == 16,
+    "BlitCommand must be exactly 16 bytes"
+);
+
+impl BlitCommand {
+    /// Encode to exactly 16 little-endian bytes.
+    pub fn to_bytes(&self) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        out[0..2].copy_from_slice(&self.region_x.to_le_bytes());
+        out[2..4].copy_from_slice(&self.region_y.to_le_bytes());
+        out[4..6].copy_from_slice(&self.region_w.to_le_bytes());
+        out[6..8].copy_from_slice(&self.region_h.to_le_bytes());
+        out[8..10].copy_from_slice(&self.dx.to_le_bytes());
+        out[10..12].copy_from_slice(&self.dy.to_le_bytes());
+        out[12..14].copy_from_slice(&self.strip_w.to_le_bytes());
+        out[14..16].copy_from_slice(&self.strip_h.to_le_bytes());
+        out
+    }
+
+    /// Decode from exactly 16 little-endian bytes.
+    pub fn from_bytes(b: &[u8; 16]) -> Self {
+        Self {
+            region_x: i16::from_le_bytes([b[0],  b[1]]),
+            region_y: i16::from_le_bytes([b[2],  b[3]]),
+            region_w: u16::from_le_bytes([b[4],  b[5]]),
+            region_h: u16::from_le_bytes([b[6],  b[7]]),
+            dx:       i16::from_le_bytes([b[8],  b[9]]),
+            dy:       i16::from_le_bytes([b[10], b[11]]),
+            strip_w:  u16::from_le_bytes([b[12], b[13]]),
+            strip_h:  u16::from_le_bytes([b[14], b[15]]),
+        }
+    }
+
+    /// Screen-space `(x, y)` origin of the exposed strip.
+    ///
+    /// Derived from `region_*` and `dx`/`dy` — no extra bytes needed in the
+    /// wire format.
+    pub fn strip_origin(&self) -> (i32, i32) {
+        if self.dy < 0 {
+            // Content moved up: new content appears at the bottom.
+            (
+                self.region_x as i32,
+                self.region_y as i32 + self.region_h as i32 + self.dy as i32,
+            )
+        } else if self.dy > 0 {
+            // Content moved down: new content appears at the top.
+            (self.region_x as i32, self.region_y as i32)
+        } else if self.dx < 0 {
+            // Content moved left: new content appears on the right.
+            (
+                self.region_x as i32 + self.region_w as i32 + self.dx as i32,
+                self.region_y as i32,
+            )
+        } else {
+            // Content moved right (dx > 0): new content appears on the left.
+            (self.region_x as i32, self.region_y as i32)
+        }
+    }
+}
+
+// ── BlitResult ────────────────────────────────────────────────────────────────
+
+/// Output of a successful scroll detection (Feature 90).
+pub struct BlitResult {
+    /// The 16-byte scroll descriptor.
+    pub command: BlitCommand,
+    /// Raw BGRA8 pixels of the newly-exposed strip.
+    ///
+    /// Length is exactly `command.strip_w as usize × command.strip_h as usize × 4`.
+    /// Pixels are in raster order (row-major, left-to-right, top-to-bottom).
+    pub exposed_strip: Vec<u8>,
+}
+
+// ── ScrollDetector ────────────────────────────────────────────────────────────
+
+/// Maximum candidate shift per axis searched at 1/8 scale.
+///
+/// 16 units × 8 px/unit = 128 full-scale pixels per axis.  Covers all
+/// common scroll velocities at 60 Hz.
+pub const SCROLL_MAX_SMALL_SHIFT: i32 = 16;
+
+/// Minimum dirty-region dimension (full-scale pixels) for scroll detection.
+///
+/// Regions smaller than 64 × 64 pixels provide insufficient correlation
+/// context; the detector ignores them.
+pub const SCROLL_MIN_REGION_PX: u32 = 64;
+
+/// Fractional SAD improvement over the no-motion baseline required to
+/// declare a scroll.
+///
+/// A value of 0.30 means the best-shift normalized-SAD must be at least 30%
+/// lower than the zero-shift baseline.  Tuned to reject noise while accepting
+/// genuine scrolls on typical screen content.
+pub const SCROLL_CONFIDENCE_THRESHOLD: f64 = 0.30;
+
+struct SmallFrame {
+    luma:   Vec<u8>, // one byte per 8×8 source block, row-major
+    w:      u32,     // width  in small-scale units
+    h:      u32,     // height in small-scale units
+    orig_w: u32,
+    orig_h: u32,
+}
+
+/// Scroll detector using phase-correlation at 1/8-scale luma (Features 89–90).
+///
+/// On each call to [`detect`](Self::detect) the detector:
+///
+/// 1. Box-averages the current frame to 1/8 scale and converts to luma.
+/// 2. Extracts the 1/8-scale luma patch for the supplied dirty region from
+///    both the current and the stored previous frame.
+/// 3. Searches for the translation `(u, v)` in `[−16, 16]²` (small-scale
+///    units = `[−128, 128]` full-scale pixels) that minimises the
+///    normalized SAD between the two patches.
+/// 4. If the best shift reduces SAD by at least 30% over the zero-shift
+///    baseline, emits a [`BlitResult`] with the full-scale
+///    [`BlitCommand`] and the BGRA8 pixels of the newly-exposed strip
+///    extracted from the current frame.
+pub struct ScrollDetector {
+    prev: Option<SmallFrame>,
+}
+
+impl ScrollDetector {
+    /// Create a new detector with no stored previous frame.
+    pub fn new() -> Self {
+        Self { prev: None }
+    }
+
+    /// Attempt to detect a scroll in `region` between the previous and current
+    /// frames.
+    ///
+    /// Returns `Some(BlitResult)` when a confident scroll is detected, `None`
+    /// otherwise (first call, static frame, region too small, or weak match).
+    ///
+    /// **Must be called for every captured frame** so the 1/8-scale luma store
+    /// stays in sync with the capture pipeline.
+    pub fn detect(
+        &mut self,
+        pixels:  &[u8],
+        frame_w: u32,
+        frame_h: u32,
+        stride:  u32,
+        region:  crate::screen_capture::DirtyRect,
+    ) -> Option<BlitResult> {
+        let curr_small = compute_luma_small(pixels, frame_w, frame_h, stride);
+
+        let result = (|| {
+            let prev = self.prev.as_ref()?;
+
+            if prev.orig_w != frame_w || prev.orig_h != frame_h {
+                return None;
+            }
+
+            // Clamp and validate region.
+            let rx = region.x.max(0) as u32;
+            let ry = region.y.max(0) as u32;
+            let x1 = (region.x + region.width  as i32).max(0).min(frame_w as i32) as u32;
+            let y1 = (region.y + region.height as i32).max(0).min(frame_h as i32) as u32;
+            let rw = x1.saturating_sub(rx);
+            let rh = y1.saturating_sub(ry);
+
+            if rw < SCROLL_MIN_REGION_PX || rh < SCROLL_MIN_REGION_PX {
+                return None;
+            }
+
+            // Convert region to 1/8-scale coordinates.
+            let sx = rx / 8;
+            let sy = ry / 8;
+            let sw = rw.div_ceil(8)
+                .min(prev.w.saturating_sub(sx))
+                .min(curr_small.w.saturating_sub(sx));
+            let sh = rh.div_ceil(8)
+                .min(prev.h.saturating_sub(sy))
+                .min(curr_small.h.saturating_sub(sy));
+
+            if sw < 4 || sh < 4 {
+                return None;
+            }
+
+            let prev_roi = extract_roi(&prev.luma, prev.w, sx, sy, sw, sh);
+            let curr_roi = extract_roi(&curr_small.luma, curr_small.w, sx, sy, sw, sh);
+
+            let (su, sv) = find_best_shift(&prev_roi, &curr_roi, sw, sh, SCROLL_MAX_SMALL_SHIFT)?;
+
+            // Convert to full-scale and project onto the dominant axis.
+            let full_dx = -(su * 8);
+            let full_dy = -(sv * 8);
+            let (dx, dy) = if su.abs() >= sv.abs() {
+                (full_dx, 0i32)
+            } else {
+                (0i32, full_dy)
+            };
+
+            if dx == 0 && dy == 0 {
+                return None;
+            }
+
+            let (strip_x, strip_y, strip_w, strip_h) =
+                compute_strip(rx as i32, ry as i32, rw, rh, dx, dy);
+
+            if strip_w == 0 || strip_h == 0 {
+                return None;
+            }
+
+            let exposed_strip = extract_strip_pixels(
+                pixels, frame_w, frame_h, stride,
+                strip_x, strip_y, strip_w, strip_h,
+            );
+
+            Some(BlitResult {
+                command: BlitCommand {
+                    region_x: rx as i16,
+                    region_y: ry as i16,
+                    region_w: rw as u16,
+                    region_h: rh as u16,
+                    dx: dx as i16,
+                    dy: dy as i16,
+                    strip_w:  strip_w as u16,
+                    strip_h:  strip_h as u16,
+                },
+                exposed_strip,
+            })
+        })();
+
+        self.prev = Some(curr_small);
+        result
+    }
+}
+
+impl Default for ScrollDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── ScrollDetector internal helpers ───────────────────────────────────────────
+
+/// Box-average the full frame to 1/8 scale and convert to luma.
+///
+/// Luma: `Y = (2·R + 5·G + B) >> 3` — integer approximation of BT.601
+/// coefficients that avoids a multiply while preserving colour sensitivity.
+fn compute_luma_small(pixels: &[u8], frame_w: u32, frame_h: u32, stride: u32) -> SmallFrame {
+    let w = frame_w.div_ceil(8);
+    let h = frame_h.div_ceil(8);
+    let mut luma = vec![0u8; (w * h) as usize];
+
+    for sy in 0..h {
+        for sx in 0..w {
+            let mut sum   = 0u32;
+            let mut count = 0u32;
+            for dy in 0..8u32 {
+                let fy = sy * 8 + dy;
+                if fy >= frame_h { break; }
+                for dx in 0..8u32 {
+                    let fx = sx * 8 + dx;
+                    if fx >= frame_w { break; }
+                    let off = (fy * stride + fx * 4) as usize;
+                    let b   = pixels[off]     as u32;
+                    let g   = pixels[off + 1] as u32;
+                    let r   = pixels[off + 2] as u32;
+                    sum += (2 * r + 5 * g + b) >> 3;
+                    count += 1;
+                }
+            }
+            luma[(sy * w + sx) as usize] = if count > 0 { (sum / count) as u8 } else { 0 };
+        }
+    }
+
+    SmallFrame { luma, w, h, orig_w: frame_w, orig_h: frame_h }
+}
+
+/// Copy a rectangular sub-region from a row-major luma buffer.
+fn extract_roi(luma: &[u8], luma_w: u32, rx: u32, ry: u32, rw: u32, rh: u32) -> Vec<u8> {
+    let mut roi = vec![0u8; (rw * rh) as usize];
+    for y in 0..rh {
+        let src = ((ry + y) * luma_w + rx) as usize;
+        let dst = (y * rw) as usize;
+        roi[dst..dst + rw as usize].copy_from_slice(&luma[src..src + rw as usize]);
+    }
+    roi
+}
+
+/// Find translation `(u, v)` such that `prev[x+u, y+v] ≈ curr[x, y]`.
+///
+/// Returns `None` when no shift beats the zero-shift baseline by the
+/// [`SCROLL_CONFIDENCE_THRESHOLD`] margin, or when the best shift is `(0, 0)`.
+fn find_best_shift(
+    prev: &[u8],
+    curr: &[u8],
+    w:    u32,
+    h:    u32,
+    max_shift: i32,
+) -> Option<(i32, i32)> {
+    let baseline = normalized_sad(prev, curr, w, h, 0, 0);
+    if baseline == 0 {
+        return None; // frames are identical; no scroll
+    }
+
+    let mut best_sad  = baseline;
+    let mut best_u    = 0i32;
+    let mut best_v    = 0i32;
+    let mut best_mag2 = i64::MAX; // u² + v² of current best (tie-break: prefer smaller)
+
+    for v in -max_shift..=max_shift {
+        for u in -max_shift..=max_shift {
+            if u == 0 && v == 0 { continue; }
+            let sad  = normalized_sad(prev, curr, w, h, u, v);
+            let mag2 = (u as i64 * u as i64) + (v as i64 * v as i64);
+            let better = sad < best_sad || (sad == best_sad && mag2 < best_mag2);
+            if better {
+                best_sad  = sad;
+                best_u    = u;
+                best_v    = v;
+                best_mag2 = mag2;
+            }
+        }
+    }
+
+    if best_u == 0 && best_v == 0 {
+        return None;
+    }
+
+    let improvement = 1.0 - (best_sad as f64 / baseline as f64);
+    if improvement < SCROLL_CONFIDENCE_THRESHOLD {
+        return None;
+    }
+
+    Some((best_u, best_v))
+}
+
+/// Normalized SAD: per-pixel absolute difference between `prev[x+u, y+v]` and
+/// `curr[x, y]` over the valid overlap, scaled to the full region area so
+/// that different shifts with different overlap sizes are comparable.
+fn normalized_sad(prev: &[u8], curr: &[u8], w: u32, h: u32, u: i32, v: i32) -> u64 {
+    let x0 = 0i32.max(-u);
+    let y0 = 0i32.max(-v);
+    let x1 = (w as i32).min(w as i32 - u);
+    let y1 = (h as i32).min(h as i32 - v);
+
+    if x1 <= x0 || y1 <= y0 {
+        return u64::MAX;
+    }
+
+    let overlap = ((x1 - x0) * (y1 - y0)) as u64;
+    let mut sum = 0u64;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let pi = ((y + v) * w as i32 + (x + u)) as usize;
+            let ci = (y         * w as i32 + x     ) as usize;
+            sum += (prev[pi] as i32 - curr[ci] as i32).unsigned_abs() as u64;
+        }
+    }
+
+    sum * (w * h) as u64 / overlap
+}
+
+/// Derive exposed-strip position and size from the region and displacement.
+fn compute_strip(rx: i32, ry: i32, rw: u32, rh: u32, dx: i32, dy: i32)
+    -> (i32, i32, u32, u32) // (strip_x, strip_y, strip_w, strip_h)
+{
+    if dy < 0 {
+        (rx, ry + rh as i32 + dy, rw, (-dy) as u32)
+    } else if dy > 0 {
+        (rx, ry, rw, dy as u32)
+    } else if dx < 0 {
+        (rx + rw as i32 + dx, ry, (-dx) as u32, rh)
+    } else {
+        // dx > 0
+        (rx, ry, dx as u32, rh)
+    }
+}
+
+/// Extract BGRA8 pixels from a rectangular strip of the frame.
+fn extract_strip_pixels(
+    pixels:  &[u8],
+    frame_w: u32,
+    frame_h: u32,
+    stride:  u32,
+    strip_x: i32,
+    strip_y: i32,
+    strip_w: u32,
+    strip_h: u32,
+) -> Vec<u8> {
+    let mut out = vec![0u8; (strip_w * strip_h * 4) as usize];
+    for row in 0..strip_h {
+        let src_y = strip_y + row as i32;
+        if src_y < 0 || src_y >= frame_h as i32 { continue; }
+        let src_y = src_y as u32;
+        for col in 0..strip_w {
+            let src_x = strip_x + col as i32;
+            if src_x < 0 || src_x >= frame_w as i32 { continue; }
+            let src_x = src_x as u32;
+            let src_off = (src_y * stride + src_x * 4) as usize;
+            let dst_off = ((row * strip_w + col) * 4) as usize;
+            out[dst_off..dst_off + 4].copy_from_slice(&pixels[src_off..src_off + 4]);
+        }
+    }
+    out
+}
+
 // ── bits_per_index ────────────────────────────────────────────────────────────
 
 /// Bits needed to represent a palette index for a palette of size `n`.

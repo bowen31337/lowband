@@ -132,6 +132,8 @@ pub use screen_encoder::{
     PaletteDecodeError, PaletteEncodeError, PaletteTileDecoder, PaletteTileEncoder,
     LOSSLESS_BYTES_PER_PICTURE_TILE, PALETTE_COLOR_LIMIT, PIXEL_EXACT_DEADLINE_MS,
     TILE_BYTES, TILE_SIZE_PX, VIDEO_COLOR_LIMIT,
+    BlitCommand, BlitResult, ScrollDetector,
+    SCROLL_CONFIDENCE_THRESHOLD, SCROLL_MAX_SMALL_SHIFT, SCROLL_MIN_REGION_PX,
 };
 pub use gear_policy::{
     allocate, gear_b_preset_from_cpu_pct, select_resolution, Av1EncodeCapability, CameraGear,
