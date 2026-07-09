@@ -41,6 +41,7 @@ pub mod dred_sender;
 pub mod dtx;
 pub mod lbrr_fec;
 pub mod elevation;
+pub mod opus_encoder;
 pub mod jitter_buffer;
 pub mod opus_decoder;
 pub mod plc_chain;
@@ -122,6 +123,10 @@ pub use neural_vocoder::{
 };
 pub use opus_decoder::{
     lace_mode_from_cpu_pct, LaceMode, LACE_CPU_OVERHEAD_PCT, LACE_HEADROOM_THRESHOLD_PCT,
+};
+pub use opus_encoder::{
+    constrained_tier_settings, opus_settings_from_tier, OpusMode, OpusTierSettings,
+    COMFORTABLE_AUDIO_BPS, CONSTRAINED_AUDIO_BPS, FULL_AUDIO_BPS, SURVIVAL_FALLBACK_AUDIO_BPS,
 };
 pub use opus_packetizer::{
     frame_duration_ms_from_tier, header_overhead_fraction, packets_per_second,
