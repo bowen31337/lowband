@@ -142,6 +142,18 @@ impl AuditLog {
         buf.push_str("]}");
         buf
     }
+
+    /// Write the tamper-evident JSON export to `path`.
+    ///
+    /// The file contains the same content as [`AuditLog::export_json`] with
+    /// each entry's 256-bit chain signature encoded as lowercase hex.  Any
+    /// post-write tampering (field edits, entry removal, reordering) is
+    /// detectable by re-running [`AuditLog::verify_entries`] against the
+    /// session key used at construction.
+    pub fn export_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let json = self.export_json();
+        std::fs::write(path, json.as_bytes())
+    }
 }
 
 // ── Keyed hash (pure-Rust SipHash-2-4 → 256-bit) ─────────────────────────────
@@ -382,5 +394,53 @@ mod tests {
             sigs[0], sigs[1],
             "two entries with identical content but different chain positions must have different sigs"
         );
+    }
+
+    #[test]
+    fn export_to_file_writes_readable_json() {
+        let mut log = AuditLog::new(TEST_KEY);
+        log.append("view_granted", Some("view"), 1);
+        log.append("control_granted", Some("control"), 2);
+        log.append("session_ended", None, 3);
+
+        let path = std::env::temp_dir().join("lowband_audit_export_test_write.json");
+        log.export_to_file(&path).expect("export_to_file must succeed");
+
+        let content = std::fs::read_to_string(&path).expect("exported file must be readable");
+        assert!(content.contains("view_granted"), "json: {content}");
+        assert!(content.contains("control_granted"), "json: {content}");
+        assert!(content.contains("session_ended"), "json: {content}");
+        assert!(content.contains("\"signature\""), "json: {content}");
+        assert!(content.contains("\"capability\":null"), "json: {content}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn export_to_file_content_matches_export_json() {
+        let mut log = AuditLog::new(TEST_KEY);
+        log.append("grant_issued", Some("file"), 100);
+        log.append("session_ended", None, 200);
+
+        let path = std::env::temp_dir().join("lowband_audit_export_test_match.json");
+        log.export_to_file(&path).expect("export_to_file must succeed");
+
+        let from_file = std::fs::read_to_string(&path).expect("must be readable");
+        let from_method = log.export_json();
+        assert_eq!(from_file, from_method, "file content must equal export_json() output");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn export_to_file_empty_log_writes_valid_json() {
+        let log = AuditLog::new(TEST_KEY);
+        let path = std::env::temp_dir().join("lowband_audit_export_test_empty.json");
+        log.export_to_file(&path).expect("empty log export must succeed");
+
+        let content = std::fs::read_to_string(&path).expect("must be readable");
+        assert_eq!(content, "{\"entries\":[]}", "empty log must produce empty entries array");
+
+        let _ = std::fs::remove_file(&path);
     }
 }
