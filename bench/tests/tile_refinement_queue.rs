@@ -38,6 +38,13 @@
 //!    `screen_refinement_bps` is positive (idle bandwidth exists).
 //! 2. At `Serious` or `Critical` thermal pressure, `screen_refinement_bps`
 //!    is zero — refinement is fully suspended, not merely slowed.
+//! 2a. At `Serious` thermal, `screen_coarse_bps` remains positive — text
+//!    deltas are still delivered even though refinement is suspended.
+//! 2b. At `Critical` thermal, `screen_coarse_bps` remains positive — text
+//!    deltas are still delivered even though the camera is off and refinement
+//!    is suspended.
+//! 2c. A typed-character coarse-pass update (4 TEXT tiles × 30 B = 120 B)
+//!    still arrives within the 50 ms deadline when refinement is suspended.
 //! 3. A mixed queue (TEXT, FLAT, PICTURE tiles inserted in arbitrary order)
 //!    drains in strict saliency order: TEXT (3) > FLAT (2) > PICTURE (1).
 //! 4. Within the same saliency tier, tiles drain in FIFO order.
@@ -52,7 +59,8 @@
 
 use lowband_platform::gear_policy::{allocate, GearConstraints};
 use lowband_platform::screen_encoder::{
-    RefinementQueue, TileClass, TileCoord, LOSSLESS_BYTES_PER_PICTURE_TILE,
+    RefinementQueue, TileClass, TileCoord, COARSE_BYTES_PER_PALETTE_TILE,
+    COARSE_PASS_DEADLINE_MS, LOSSLESS_BYTES_PER_PICTURE_TILE,
 };
 use lowband_platform::thermal::ThermalPressure;
 
@@ -284,4 +292,77 @@ fn saliency_order_preserved_under_streaming_damage_events() {
     assert_eq!(drained, p1);
 
     assert!(q.is_empty(), "all tiles must be consumed");
+}
+
+// ── 2a/2b. Coarse lane continues at Serious and Critical thermal ──────────────
+
+/// When refinement is suspended at Serious thermal, the coarse lane (which
+/// carries TEXT / FLAT tile deltas losslessly) must still receive a positive
+/// budget.  A technician must see typed characters immediately even when the
+/// CPU is under pressure.
+#[test]
+fn coarse_lane_text_deltas_continue_at_serious_thermal() {
+    let constraints = GearConstraints::from_thermal(ThermalPressure::Serious);
+    let budgets = allocate(400_000, &constraints);
+
+    assert_eq!(
+        budgets.screen_refinement_bps, 0,
+        "refinement must be suspended (zero bps) at Serious thermal"
+    );
+    assert!(
+        budgets.screen_coarse_bps > 0,
+        "coarse lane must remain funded ({} bps) at Serious thermal so that \
+         TEXT tile deltas still reach the viewer",
+        budgets.screen_coarse_bps
+    );
+}
+
+/// At Critical thermal the camera is off and refinement is suspended, but the
+/// coarse lane must still carry text deltas — the session is reduced to
+/// voice + legible screen + responsive input.
+#[test]
+fn coarse_lane_text_deltas_continue_at_critical_thermal() {
+    let constraints = GearConstraints::from_thermal(ThermalPressure::Critical);
+    let budgets = allocate(400_000, &constraints);
+
+    assert_eq!(
+        budgets.screen_refinement_bps, 0,
+        "refinement must be suspended (zero bps) at Critical thermal"
+    );
+    assert_eq!(budgets.camera_bps, 0, "camera must be off at Critical thermal");
+    assert!(
+        budgets.screen_coarse_bps > 0,
+        "coarse lane must remain funded ({} bps) at Critical thermal so that \
+         TEXT tile deltas still reach the viewer",
+        budgets.screen_coarse_bps
+    );
+}
+
+// ── 2c. Text glyph coarse pass still within 50 ms when refinement suspended ───
+
+/// A single typed-character damage event (4 TEXT tiles × 30 B = 120 B) must
+/// still arrive within the 50 ms coarse-pass deadline when refinement is
+/// suspended at Serious thermal.  The suspension of the lossless rebuild must
+/// not impede the first-impression coarse delivery.
+#[test]
+fn text_glyph_coarse_pass_within_50ms_when_refinement_suspended() {
+    let constraints = GearConstraints::from_thermal(ThermalPressure::Serious);
+    let budgets = allocate(400_000, &constraints);
+
+    // Precondition: refinement suspended, coarse lane running.
+    assert_eq!(budgets.screen_refinement_bps, 0);
+    assert!(budgets.screen_coarse_bps > 0);
+
+    // 4 TEXT tiles (one typed glyph touching a 2×2 tile block).
+    const GLYPH_TILES: u64 = 4;
+    let total_bits = GLYPH_TILES * COARSE_BYTES_PER_PALETTE_TILE * 8;
+    let coarse_ms  = total_bits * 1_000 / budgets.screen_coarse_bps as u64;
+
+    assert!(
+        coarse_ms <= COARSE_PASS_DEADLINE_MS,
+        "{GLYPH_TILES} TEXT tiles × {COARSE_BYTES_PER_PALETTE_TILE} B = {total_bits} bits; \
+         at {} bps coarse that is {coarse_ms} ms — must be ≤ {COARSE_PASS_DEADLINE_MS} ms \
+         even when refinement is suspended at Serious thermal",
+        budgets.screen_coarse_bps
+    );
 }
