@@ -767,12 +767,12 @@ pub const SCROLL_MAX_SMALL_SHIFT: i32 = 16;
 /// context; the detector ignores them.
 pub const SCROLL_MIN_REGION_PX: u32 = 64;
 
-/// Fractional SAD improvement over the no-motion baseline required to
-/// declare a scroll.
+/// Normalised phase-correlation peak required to declare a scroll.
 ///
-/// A value of 0.30 means the best-shift normalized-SAD must be at least 30%
-/// lower than the zero-shift baseline.  Tuned to reject noise while accepting
-/// genuine scrolls on typical screen content.
+/// The phase-correlation IFFT is normalised so that a perfect single-pixel
+/// translation produces a peak of 1.0.  A value of 0.30 means the best-shift
+/// response must reach at least 30% of that maximum.  Tuned to reject noise
+/// while accepting genuine scrolls on typical screen content.
 pub const SCROLL_CONFIDENCE_THRESHOLD: f64 = 0.30;
 
 struct SmallFrame {
@@ -790,13 +790,12 @@ struct SmallFrame {
 /// 1. Box-averages the current frame to 1/8 scale and converts to luma.
 /// 2. Extracts the 1/8-scale luma patch for the supplied dirty region from
 ///    both the current and the stored previous frame.
-/// 3. Searches for the translation `(u, v)` in `[−16, 16]²` (small-scale
-///    units = `[−128, 128]` full-scale pixels) that minimises the
-///    normalized SAD between the two patches.
-/// 4. If the best shift reduces SAD by at least 30% over the zero-shift
-///    baseline, emits a [`BlitResult`] with the full-scale
-///    [`BlitCommand`] and the BGRA8 pixels of the newly-exposed strip
-///    extracted from the current frame.
+/// 3. Uses 2-D phase correlation (FFT-based) to find the dominant integer
+///    translation `(u, v)` in `[−16, 16]²` (small-scale units =
+///    `[−128, 128]` full-scale pixels).
+/// 4. If the normalised cross-power peak meets [`SCROLL_CONFIDENCE_THRESHOLD`],
+///    emits a [`BlitResult`] with the full-scale [`BlitCommand`] and the
+///    BGRA8 pixels of the newly-exposed strip extracted from the current frame.
 pub struct ScrollDetector {
     prev: Option<SmallFrame>,
 }
@@ -861,7 +860,7 @@ impl ScrollDetector {
             let prev_roi = extract_roi(&prev.luma, prev.w, sx, sy, sw, sh);
             let curr_roi = extract_roi(&curr_small.luma, curr_small.w, sx, sy, sw, sh);
 
-            let (su, sv) = find_best_shift(&prev_roi, &curr_roi, sw, sh, SCROLL_MAX_SMALL_SHIFT)?;
+            let (su, sv) = phase_correlate(&prev_roi, &curr_roi, sw, sh, SCROLL_MAX_SMALL_SHIFT)?;
 
             // Convert to full-scale and project onto the dominant axis.
             let full_dx = -(su * 8);
@@ -961,78 +960,210 @@ fn extract_roi(luma: &[u8], luma_w: u32, rx: u32, ry: u32, rw: u32, rh: u32) -> 
     roi
 }
 
-/// Find translation `(u, v)` such that `prev[x+u, y+v] ≈ curr[x, y]`.
-///
-/// Returns `None` when no shift beats the zero-shift baseline by the
-/// [`SCROLL_CONFIDENCE_THRESHOLD`] margin, or when the best shift is `(0, 0)`.
-fn find_best_shift(
-    prev: &[u8],
-    curr: &[u8],
-    w:    u32,
-    h:    u32,
-    max_shift: i32,
-) -> Option<(i32, i32)> {
-    let baseline = normalized_sad(prev, curr, w, h, 0, 0);
-    if baseline == 0 {
-        return None; // frames are identical; no scroll
-    }
+// ── FFT-based phase correlation ────────────────────────────────────────────
 
-    let mut best_sad  = baseline;
-    let mut best_u    = 0i32;
-    let mut best_v    = 0i32;
-    let mut best_mag2 = i64::MAX; // u² + v² of current best (tie-break: prefer smaller)
-
-    for v in -max_shift..=max_shift {
-        for u in -max_shift..=max_shift {
-            if u == 0 && v == 0 { continue; }
-            let sad  = normalized_sad(prev, curr, w, h, u, v);
-            let mag2 = (u as i64 * u as i64) + (v as i64 * v as i64);
-            let better = sad < best_sad || (sad == best_sad && mag2 < best_mag2);
-            if better {
-                best_sad  = sad;
-                best_u    = u;
-                best_v    = v;
-                best_mag2 = mag2;
-            }
-        }
-    }
-
-    if best_u == 0 && best_v == 0 {
-        return None;
-    }
-
-    let improvement = 1.0 - (best_sad as f64 / baseline as f64);
-    if improvement < SCROLL_CONFIDENCE_THRESHOLD {
-        return None;
-    }
-
-    Some((best_u, best_v))
+/// Complex number for internal phase-correlation arithmetic.
+#[derive(Clone, Copy)]
+struct C32 {
+    re: f32,
+    im: f32,
 }
 
-/// Normalized SAD: per-pixel absolute difference between `prev[x+u, y+v]` and
-/// `curr[x, y]` over the valid overlap, scaled to the full region area so
-/// that different shifts with different overlap sizes are comparable.
-fn normalized_sad(prev: &[u8], curr: &[u8], w: u32, h: u32, u: i32, v: i32) -> u64 {
-    let x0 = 0i32.max(-u);
-    let y0 = 0i32.max(-v);
-    let x1 = (w as i32).min(w as i32 - u);
-    let y1 = (h as i32).min(h as i32 - v);
+impl C32 {
+    #[inline]
+    fn mul(self, b: C32) -> C32 {
+        C32 { re: self.re * b.re - self.im * b.im, im: self.re * b.im + self.im * b.re }
+    }
+    #[inline]
+    fn conj(self) -> C32 { C32 { re: self.re, im: -self.im } }
+    #[inline]
+    fn mag(self) -> f32 { (self.re * self.re + self.im * self.im).sqrt() }
+}
 
-    if x1 <= x0 || y1 <= y0 {
-        return u64::MAX;
+/// In-place radix-2 DIT Cooley-Tukey FFT.  `data.len()` must be a power of two ≥ 2.
+/// When `inverse`, normalises by `1/N` so that `IFFT(FFT(x)) = x`.
+fn fft_inplace(data: &mut [C32], inverse: bool) {
+    let n = data.len();
+    debug_assert!(n >= 2 && n.is_power_of_two());
+
+    let bits = n.trailing_zeros();
+    for i in 0..n {
+        let j = (i as u32).reverse_bits().wrapping_shr(u32::BITS - bits) as usize;
+        if i < j { data.swap(i, j); }
     }
 
-    let overlap = ((x1 - x0) * (y1 - y0)) as u64;
-    let mut sum = 0u64;
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let pi = ((y + v) * w as i32 + (x + u)) as usize;
-            let ci = (y         * w as i32 + x     ) as usize;
-            sum += (prev[pi] as i32 - curr[ci] as i32).unsigned_abs() as u64;
+    let sign: f32 = if inverse { 1.0 } else { -1.0 };
+    let mut half = 1usize;
+    while half < n {
+        let len  = half << 1;
+        let ang  = sign * std::f32::consts::PI / half as f32;
+        let wlen = C32 { re: ang.cos(), im: ang.sin() };
+        let mut base = 0;
+        while base < n {
+            let mut w = C32 { re: 1.0, im: 0.0 };
+            for k in 0..half {
+                let u = data[base + k];
+                let v = data[base + k + half].mul(w);
+                data[base + k]        = C32 { re: u.re + v.re, im: u.im + v.im };
+                data[base + k + half] = C32 { re: u.re - v.re, im: u.im - v.im };
+                w = w.mul(wlen);
+            }
+            base += len;
+        }
+        half = len;
+    }
+
+    if inverse {
+        let scale = 1.0 / n as f32;
+        for x in data.iter_mut() { x.re *= scale; x.im *= scale; }
+    }
+}
+
+#[inline]
+fn next_pow2(n: usize) -> usize {
+    let mut p = 1usize;
+    while p < n { p <<= 1; }
+    p
+}
+
+/// Phase-correlation shift detector.
+///
+/// Returns `(u, v)` (small-scale units) such that `prev[x+u, y+v] ≈ curr[x, y]`,
+/// or `None` when the correlation peak falls below [`SCROLL_CONFIDENCE_THRESHOLD`]
+/// or is at the zero-shift position (identical patches).
+///
+/// # Algorithm
+///
+/// The 2-D luma patches are projected onto each axis before correlation:
+///
+/// * **Vertical shift** — column-mean projection (one value per row) → 1-D phase
+///   correlation along the height axis.
+/// * **Horizontal shift** — row-mean projection (one value per column) → 1-D
+///   phase correlation along the width axis.
+///
+/// Axis projection discards orthogonal structure that cannot contribute to a
+/// pure scroll and makes the correlation signal much cleaner for content that
+/// is predominantly structured along one axis (e.g. horizontal text bands).
+/// The dominant axis is chosen by the higher normalised peak value.
+///
+/// 1-D phase correlation steps (per axis):
+///
+/// 1. Zero-pad the 1-D signal to the next power-of-two ≥ `n + max_shift`.
+/// 2. Compute the 1-D FFT of both signals.
+/// 3. Form the normalised cross-power spectrum `R[k] = (F1[k]·F2*[k]) / |F1[k]·F2*[k]|`.
+/// 4. Take the IFFT of `R`; for a pure integer shift `d`, the peak is at
+///    position `d mod pad_n` with amplitude 1.0.
+/// 5. Find the peak in the wrapped positions corresponding to shifts in
+///    `[−max_shift, max_shift]` (excluding 0).
+fn phase_correlate(
+    prev:      &[u8],
+    curr:      &[u8],
+    w:         u32,
+    h:         u32,
+    max_shift: i32,
+) -> Option<(i32, i32)> {
+    let (ww, hh) = (w as usize, h as usize);
+
+    // Column-mean projection (one value per row): detects vertical shift.
+    let prev_v = project_cols(prev, ww, hh);
+    let curr_v = project_cols(curr, ww, hh);
+
+    // Row-mean projection (one value per column): detects horizontal shift.
+    let prev_h = project_rows(prev, ww, hh);
+    let curr_h = project_rows(curr, ww, hh);
+
+    let v = correlate_1d(&prev_v, &curr_v, max_shift);
+    let u = correlate_1d(&prev_h, &curr_h, max_shift);
+
+    match (u, v) {
+        (Some((du, cu)), Some((dv, cv))) => {
+            if cu >= cv { Some((du, 0)) } else { Some((0, dv)) }
+        }
+        (Some((du, _)), None)  => Some((du, 0)),
+        (None, Some((dv, _))) => Some((0, dv)),
+        (None, None)           => None,
+    }
+}
+
+/// Average each row across all columns → one `f32` per row.
+fn project_cols(data: &[u8], w: usize, h: usize) -> Vec<f32> {
+    (0..h).map(|y| {
+        let sum: u32 = (0..w).map(|x| data[y * w + x] as u32).sum();
+        sum as f32 / w as f32
+    }).collect()
+}
+
+/// Average each column across all rows → one `f32` per column.
+fn project_rows(data: &[u8], w: usize, h: usize) -> Vec<f32> {
+    (0..w).map(|x| {
+        let sum: u32 = (0..h).map(|y| data[y * w + x] as u32).sum();
+        sum as f32 / h as f32
+    }).collect()
+}
+
+/// 1-D normalised phase correlation.
+///
+/// Returns `Some((shift, peak))` where `shift` satisfies `prev[i + shift] ≈ curr[i]`
+/// and `peak` is in `[0, 1]`.  Returns `None` when the peak is below
+/// [`SCROLL_CONFIDENCE_THRESHOLD`] or is at zero displacement.
+///
+/// The IFFT result is rescaled by `pad_n / active_bins` so that a perfect
+/// shift gives a peak of 1.0 regardless of how many frequency bins have
+/// non-negligible magnitude (handles signals with limited spectral support).
+fn correlate_1d(prev: &[f32], curr: &[f32], max_shift: i32) -> Option<(i32, f32)> {
+    let n  = prev.len();
+    debug_assert_eq!(n, curr.len());
+    let ms    = max_shift as usize;
+    let pad_n = next_pow2((n + ms).max(2));
+    let zero  = C32 { re: 0.0, im: 0.0 };
+
+    let mut f1: Vec<C32> = (0..pad_n).map(|i| {
+        if i < n { C32 { re: prev[i], im: 0.0 } } else { zero }
+    }).collect();
+    let mut f2: Vec<C32> = (0..pad_n).map(|i| {
+        if i < n { C32 { re: curr[i], im: 0.0 } } else { zero }
+    }).collect();
+
+    fft_inplace(&mut f1, false);
+    fft_inplace(&mut f2, false);
+
+    // Normalised cross-power spectrum; count active (non-degenerate) bins.
+    let mut active = 0usize;
+    for i in 0..pad_n {
+        let c = f1[i].mul(f2[i].conj());
+        let m = c.mag();
+        if m > 1e-9 {
+            active += 1;
+            f1[i] = C32 { re: c.re / m, im: c.im / m };
+        } else {
+            f1[i] = zero;
+        }
+    }
+    if active == 0 { return None; }
+
+    fft_inplace(&mut f1, true); // IFFT in-place; result in f1
+
+    // Rescale so that a perfect all-bin correlation peaks at 1.0.
+    let scale = pad_n as f32 / active as f32;
+
+    let mut best_val = f32::NEG_INFINITY;
+    let mut best_d   = 0i32;
+
+    for d in -max_shift..=max_shift {
+        if d == 0 { continue; }
+        let p   = d.rem_euclid(pad_n as i32) as usize;
+        let val = f1[p].re * scale;
+        if val > best_val {
+            best_val = val;
+            best_d   = d;
         }
     }
 
-    sum * (w * h) as u64 / overlap
+    if best_val < SCROLL_CONFIDENCE_THRESHOLD as f32 {
+        return None;
+    }
+
+    Some((best_d, best_val))
 }
 
 /// Derive exposed-strip position and size from the region and displacement.
