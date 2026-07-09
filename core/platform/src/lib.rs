@@ -67,6 +67,7 @@ pub mod opus_packetizer;
 pub mod reference_frame_sender;
 pub mod screen_capture;
 pub mod screen_encoder;
+pub mod stream_drop_policy;
 pub mod synthesis_network;
 pub mod temporal_svc;
 pub mod thermal;
@@ -191,6 +192,7 @@ pub use plc_chain::{
     PlcChain, PlcOutcome, PlcStage,
     COMFORT_NOISE_FADE_FRAMES, DRED_DEPTH_FRAMES, NEURAL_PLC_MAX_FRAMES,
 };
+pub use stream_drop_policy::{DropPolicy, StreamDropPolicy, StreamKind};
 pub use thermal::{ThermalMonitor, ThermalPressure};
 pub use tier::TierState;
 
