@@ -1,10 +1,23 @@
-//! NetEQ-style jitter buffer playout convergence — Feature 56.
+//! NetEQ-style adaptive jitter buffer — Features 55 and 56.
+//!
+//! # Delay-distribution tracking (Feature 55)
+//!
+//! [`DelayHistogram`] records the inter-arrival delay variation of incoming
+//! packets as a histogram over frame-unit buckets.  Each new observation
+//! decays all existing buckets by [`HISTOGRAM_FORGET_FACTOR`] before adding
+//! weight to the measured bucket, so recent network behaviour dominates.
+//!
+//! [`JitterBuffer`] calls [`JitterBuffer::observe_arrival_delay`] on every
+//! received packet and updates its adaptive `target_level` to the 95th
+//! percentile ([`TARGET_PERCENTILE`]) of the distribution.  This means the
+//! buffer depth tracks actual jitter rather than a static guess: it grows
+//! during a bursty period and shrinks when the path stabilises.
+//!
+//! # Playout convergence (Feature 56)
 //!
 //! When the jitter buffer diverges from its target level, the system
 //! corrects by time-scaling the audio stream rather than inserting or
 //! discarding frames, which would create audible gaps.
-//!
-//! # Convergence strategy
 //!
 //! | Buffer state                         | Action                              |
 //! |--------------------------------------|-------------------------------------|
@@ -31,6 +44,34 @@
 //! The caller must apply the PLC chain (Feature 57) to generate a plausible
 //! frame rather than emitting zeros.
 
+// ── Delay-histogram constants ─────────────────────────────────────────────────
+
+/// Number of buckets in the delay distribution histogram.
+///
+/// Each bucket i represents a delay of i frames (20 ms each), covering the
+/// range 0–99 frames (0–1.98 s).  Delays exceeding this range are clamped
+/// to bucket 99.
+pub const HISTOGRAM_BUCKETS: usize = 100;
+
+/// Per-observation exponential decay factor applied to all histogram buckets.
+///
+/// Before recording a new observation, every bucket is multiplied by this
+/// factor so that older measurements contribute less weight over time.
+/// The value 0.9931 yields a half-life of roughly 100 observations
+/// (≈ 2 s at one packet per 20 ms frame), making the distribution
+/// responsive to changing network conditions while staying stable under
+/// steady-state jitter.
+pub const HISTOGRAM_FORGET_FACTOR: f64 = 0.9931;
+
+/// Percentile of the delay distribution that sets the adaptive target level.
+///
+/// The 95th percentile accommodates the vast majority of observed delays
+/// while ignoring extreme outliers, so the buffer stalls on fewer than
+/// 5 % of arriving packets in steady state.
+pub const TARGET_PERCENTILE: f64 = 0.95;
+
+// ── Playout-convergence constants ─────────────────────────────────────────────
+
 /// Maximum time-scaling rate for playout convergence.
 ///
 /// Audio is accelerated or decelerated by at most this fraction of the
@@ -43,6 +84,90 @@ pub const MAX_TIME_SCALE_RATE: f64 = 0.15;
 /// One frame (20 ms) of dead band avoids perpetual micro-adjustments when
 /// the buffer level oscillates around the target by a single frame.
 pub const CONVERGENCE_ZONE_FRAMES: usize = 1;
+
+// ── DelayHistogram ────────────────────────────────────────────────────────────
+
+/// Histogram of observed inter-arrival delay variations, measured in 20 ms frames.
+///
+/// Tracks the empirical distribution of how many frames of extra delay each
+/// incoming packet experienced relative to the nominal arrival cadence.  All
+/// buckets are decayed by [`HISTOGRAM_FORGET_FACTOR`] on each observation so
+/// that stale measurements fade out and recent behaviour dominates.
+///
+/// In steady state (many observations) the bucket weights sum to ≈ 1.0.
+/// Before that, the total is < 1.0 and percentile queries are computed
+/// against the actual sum, so the estimate is valid from the very first
+/// observation.
+///
+/// # Usage
+///
+/// ```rust,no_run
+/// use lowband_platform::jitter_buffer::{DelayHistogram, TARGET_PERCENTILE};
+///
+/// let mut hist = DelayHistogram::new();
+/// hist.observe(3);   // packet was 3 frames late
+/// let p95 = hist.percentile_frames(TARGET_PERCENTILE);
+/// ```
+#[derive(Debug, Clone)]
+pub struct DelayHistogram {
+    buckets: [f64; HISTOGRAM_BUCKETS],
+}
+
+impl Default for DelayHistogram {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DelayHistogram {
+    /// Create an empty histogram with all buckets zeroed.
+    pub fn new() -> Self {
+        Self {
+            buckets: [0.0; HISTOGRAM_BUCKETS],
+        }
+    }
+
+    /// Record one observed inter-arrival delay and update the distribution.
+    ///
+    /// `delay_frames` is the measured extra delay for this packet in 20 ms
+    /// frames.  Values exceeding `HISTOGRAM_BUCKETS − 1` are clamped to the
+    /// last bucket.
+    pub fn observe(&mut self, delay_frames: usize) {
+        for b in self.buckets.iter_mut() {
+            *b *= HISTOGRAM_FORGET_FACTOR;
+        }
+        let bucket = delay_frames.min(HISTOGRAM_BUCKETS - 1);
+        self.buckets[bucket] += 1.0 - HISTOGRAM_FORGET_FACTOR;
+    }
+
+    /// Return the delay (in frames) at the given percentile of the distribution.
+    ///
+    /// Returns `0` when no observations have been made.
+    pub fn percentile_frames(&self, percentile: f64) -> usize {
+        let total: f64 = self.buckets.iter().sum();
+        if total <= 0.0 {
+            return 0;
+        }
+        let threshold = total * percentile.clamp(0.0, 1.0);
+        let mut cumulative = 0.0;
+        for (i, &w) in self.buckets.iter().enumerate() {
+            cumulative += w;
+            if cumulative >= threshold {
+                return i;
+            }
+        }
+        HISTOGRAM_BUCKETS - 1
+    }
+
+    /// Total accumulated weight across all buckets.
+    ///
+    /// Rises from 0 toward 1.0 as observations accumulate.
+    pub fn total_weight(&self) -> f64 {
+        self.buckets.iter().sum()
+    }
+}
+
+// ── PlayoutAction ─────────────────────────────────────────────────────────────
 
 /// Action the caller should apply to the next decoded audio frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -64,36 +189,72 @@ pub enum PlayoutAction {
     Conceal,
 }
 
-/// NetEQ-style adaptive jitter buffer with time-scaling playout convergence.
+/// NetEQ-style adaptive jitter buffer with delay-distribution tracking and
+/// time-scaling playout convergence.
 ///
 /// The buffer tracks frames enqueued and dequeued.  Each [`JitterBuffer::tick`]
 /// call returns a [`PlayoutAction`] telling the caller how to schedule the
 /// next output frame so the buffer converges to [`JitterBuffer::target_level`]
 /// without audible gaps.
+///
+/// The target level is adaptive: call [`JitterBuffer::observe_arrival_delay`]
+/// for each received packet with the measured inter-arrival delay in frames.
+/// The buffer updates its internal [`DelayHistogram`] and raises or lowers the
+/// target to the 95th percentile of observed delays (but never below the
+/// `min_target_level` supplied at construction).
 #[derive(Debug, Clone)]
 pub struct JitterBuffer {
+    /// Current adaptive target buffer depth (in frames).
     target_level: usize,
+    /// Floor below which the adaptive target will not drop.
+    min_target_level: usize,
     level: usize,
     convergence_zone: usize,
+    histogram: DelayHistogram,
 }
 
 impl JitterBuffer {
     /// Create a new jitter buffer with the given target level.
     ///
-    /// `target_level_frames` is the steady-state buffer depth in 20 ms frames
-    /// (e.g. 4 frames = 80 ms at the constrained tier).
+    /// `target_level_frames` is the initial and minimum buffer depth in 20 ms
+    /// frames (e.g. 4 frames = 80 ms at the constrained tier).  The adaptive
+    /// target will never drop below this floor.
     /// `convergence_zone_frames` is the dead band; use [`CONVERGENCE_ZONE_FRAMES`].
     pub fn new(target_level_frames: usize, convergence_zone_frames: usize) -> Self {
         Self {
             target_level: target_level_frames,
+            min_target_level: target_level_frames,
             level: 0,
             convergence_zone: convergence_zone_frames,
+            histogram: DelayHistogram::new(),
         }
     }
 
     /// Return the current buffer level in frames.
     pub fn level(&self) -> usize {
         self.level
+    }
+
+    /// Observe an incoming packet's inter-arrival delay and adapt the target level.
+    ///
+    /// `delay_frames` is the measured delay variation for this packet in 20 ms
+    /// frames — typically derived as `(actual_arrival_tick − expected_arrival_tick)`
+    /// on the receiver's playout clock.
+    ///
+    /// The internal [`DelayHistogram`] is updated and the adaptive target level
+    /// is set to the 95th percentile of the distribution, floored at
+    /// `min_target_level`.
+    ///
+    /// Call this once per arriving packet, before [`JitterBuffer::enqueue`].
+    pub fn observe_arrival_delay(&mut self, delay_frames: usize) {
+        self.histogram.observe(delay_frames);
+        let p95 = self.histogram.percentile_frames(TARGET_PERCENTILE);
+        self.target_level = p95.max(self.min_target_level);
+    }
+
+    /// Read-only access to the underlying delay distribution histogram.
+    pub fn delay_histogram(&self) -> &DelayHistogram {
+        &self.histogram
     }
 
     /// Enqueue a received frame into the buffer.
@@ -301,6 +462,154 @@ mod tests {
             jb.level(),
             prev_level,
             "Conceal must not decrement level"
+        );
+    }
+
+    // ── DelayHistogram tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn histogram_empty_returns_zero_for_any_percentile() {
+        let hist = DelayHistogram::new();
+        assert_eq!(
+            hist.percentile_frames(TARGET_PERCENTILE),
+            0,
+            "empty histogram must return 0 for any percentile query"
+        );
+        assert_eq!(hist.total_weight(), 0.0);
+    }
+
+    #[test]
+    fn histogram_single_delay_value_tracks_distribution() {
+        let mut hist = DelayHistogram::new();
+        // Observe delay=5 many times so the histogram converges.
+        for _ in 0..300 {
+            hist.observe(5);
+        }
+        assert_eq!(
+            hist.percentile_frames(TARGET_PERCENTILE),
+            5,
+            "after many observations at delay=5, p95 must return 5"
+        );
+    }
+
+    #[test]
+    fn histogram_bucket_clamped_for_extreme_delays() {
+        let mut hist = DelayHistogram::new();
+        // Observe an absurdly large delay — must be clamped to last bucket.
+        hist.observe(usize::MAX);
+        assert_eq!(
+            hist.percentile_frames(TARGET_PERCENTILE),
+            HISTOGRAM_BUCKETS - 1,
+            "extreme delay must be clamped to last bucket"
+        );
+    }
+
+    #[test]
+    fn histogram_total_weight_converges_toward_one() {
+        let mut hist = DelayHistogram::new();
+        // After many observations the total weight approaches 1.0.
+        for _ in 0..1000 {
+            hist.observe(3);
+        }
+        let w = hist.total_weight();
+        assert!(
+            w > 0.99 && w <= 1.0 + 1e-9,
+            "total weight must converge near 1.0 after many observations; got {w:.6}"
+        );
+    }
+
+    #[test]
+    fn histogram_forgets_old_distribution_when_delay_shifts() {
+        let mut hist = DelayHistogram::new();
+        // Establish a distribution around delay=3.
+        for _ in 0..300 {
+            hist.observe(3);
+        }
+        assert_eq!(hist.percentile_frames(TARGET_PERCENTILE), 3);
+
+        // Shift to a higher delay — histogram should adapt.
+        for _ in 0..300 {
+            hist.observe(15);
+        }
+        let p95 = hist.percentile_frames(TARGET_PERCENTILE);
+        assert!(
+            p95 > 3,
+            "after delay shift from 3 to 15, p95 must move above 3; got {p95}"
+        );
+    }
+
+    #[test]
+    fn histogram_p0_returns_first_occupied_bucket() {
+        let mut hist = DelayHistogram::new();
+        hist.observe(7);
+        // 0th percentile — cumulative ≥ 0 immediately — should return 0.
+        // (No observations before bucket 7, so we get 0 before any weight.)
+        assert_eq!(hist.percentile_frames(0.0), 0);
+    }
+
+    // ── JitterBuffer adaptive target tests ───────────────────────────────────
+
+    #[test]
+    fn target_level_adapts_upward_from_observed_delays() {
+        let min_target = 2usize;
+        let mut jb = JitterBuffer::new(min_target, CONVERGENCE_ZONE_FRAMES);
+        assert_eq!(jb.target_level(), min_target);
+
+        // Observe consistent high delay — target must rise.
+        for _ in 0..300 {
+            jb.observe_arrival_delay(10);
+        }
+        assert!(
+            jb.target_level() > min_target,
+            "target level must rise above floor after observing high delays; got {}",
+            jb.target_level()
+        );
+    }
+
+    #[test]
+    fn target_level_never_drops_below_min_target() {
+        let min_target = 4usize;
+        let mut jb = JitterBuffer::new(min_target, CONVERGENCE_ZONE_FRAMES);
+
+        // Observe zero-delay packets — target must stay at floor.
+        for _ in 0..500 {
+            jb.observe_arrival_delay(0);
+        }
+        assert_eq!(
+            jb.target_level(),
+            min_target,
+            "target level must not drop below min_target_level even with zero-delay observations"
+        );
+    }
+
+    #[test]
+    fn target_level_reflects_p95_of_delay_histogram() {
+        let min_target = 1usize;
+        let mut jb = JitterBuffer::new(min_target, CONVERGENCE_ZONE_FRAMES);
+
+        // After enough observations at delay=8, p95 ≈ 8.
+        for _ in 0..400 {
+            jb.observe_arrival_delay(8);
+        }
+        assert_eq!(
+            jb.target_level(),
+            8,
+            "target level must equal the p95 of observed delays"
+        );
+    }
+
+    #[test]
+    fn delay_histogram_accessor_returns_same_data_as_internal_state() {
+        let min_target = 1usize;
+        let mut jb = JitterBuffer::new(min_target, CONVERGENCE_ZONE_FRAMES);
+        for _ in 0..200 {
+            jb.observe_arrival_delay(6);
+        }
+        let p95_via_hist = jb.delay_histogram().percentile_frames(TARGET_PERCENTILE);
+        assert_eq!(
+            p95_via_hist,
+            jb.target_level(),
+            "delay_histogram accessor must agree with the adaptive target level"
         );
     }
 }
