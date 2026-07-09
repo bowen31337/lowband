@@ -1,0 +1,8 @@
+[package]
+name = "lowband-obs"
+version = "0.1.0"
+edition = "2021"
+description = "LowBand observability — opt-in aggregate QoS telemetry (no media content)"
+
+[dependencies]
+lowband-messaging = { path = "../messaging" }

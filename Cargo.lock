@@ -581,6 +581,13 @@ name = "lowband-messaging"
 version = "0.1.0"
 
 [[package]]
+name = "lowband-obs"
+version = "0.1.0"
+dependencies = [
+ "lowband-messaging",
+]
+
+[[package]]
 name = "lowband-platform"
 version = "0.1.0"
 dependencies = [
