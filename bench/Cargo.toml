@@ -12,3 +12,4 @@ path = "src/lib.rs"
 lowband-lbtp      = { path = "../core/lbtp" }
 lowband-messaging = { path = "../core/messaging" }
 lowband-platform  = { path = "../core/platform", default-features = false }
+lowband-xfer      = { path = "../core/xfer" }

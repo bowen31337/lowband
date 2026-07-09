@@ -616,6 +616,7 @@ dependencies = [
  "lowband-lbtp",
  "lowband-messaging",
  "lowband-platform",
+ "lowband-xfer",
 ]
 
 [[package]]
