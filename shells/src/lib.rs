@@ -10,6 +10,7 @@
 //! | 149 | UI displays zero networking_questions to the assisted user during join |
 //! | 150 | App survives a crash with ui_shell isolation and never drops the underlying call |
 //! | 151 | UI displays a session summary with capabilities used and total data consumed |
+//! | 152 | User can revoke session access with capability_token removal in a single click |
 
 pub mod audit_export;
 pub mod gear_badge;
@@ -17,6 +18,7 @@ pub mod join_screen;
 pub mod panic_control;
 pub mod quality_bar;
 pub mod relay_warning;
+pub mod revocation_control;
 pub mod session_summary;
 pub mod ui_shell;
 
@@ -32,5 +34,10 @@ pub use quality_bar::{QualityBar, QualitySnapshot, MIN_REFRESH_INTERVAL};
 pub use relay_warning::{
     RelayWarning, RelayWarningSnapshot, RELAY_WARNING_COLOR,
     RELAY_PENALTY_LABEL_PREFIX, RELAY_PENALTY_LABEL_SUFFIX,
+};
+pub use revocation_control::{
+    RevocationControl, RevocationControlState,
+    REVOKE_BUTTON_COLOR, REVOKE_BUTTON_LABEL,
+    REVOKE_CONFIRMED_COLOR, REVOKE_CONFIRMED_LABEL,
 };
 pub use session_summary::{CapabilitiesUsed, SessionSummary, SessionTracker};
