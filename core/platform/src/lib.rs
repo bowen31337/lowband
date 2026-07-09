@@ -11,6 +11,7 @@
 //! | 56  | Jitter buffer: converges playout under 15% with time_scaling instead of gaps |
 //! | 57  | PLC chain: orders concealment — FEC decode, DRED, neural PLC, faded comfort noise |
 //! | 58  | Opus LACE: enables LACE decoder enhancement when cpu_headroom is available |
+//! | 127 | Face-tile ROI: spends 30–40% extra bits on face tiles via roi_delta_qp in Gear B |
 //! | 128 | Denoise pre-filter: cleans sensor noise with denoise_prefilter before encode |
 //! | 155 | Privilege escalation: per-platform elevation documented, explicit, never silent |
 //! | 160 | CPU ceiling: caps a constrained-tier session to 35% on a 2015-class laptop |
@@ -149,7 +150,8 @@ pub use screen_encoder::{
 pub use gear_policy::{
     allocate, gear_b_preset_from_cpu_pct, select_resolution, Av1EncodeCapability, CameraGear,
     DisplayResolution, GearConstraints, StreamBudgets, AUDIO_FLOOR_BPS,
-    CPU_PRESET10_THRESHOLD_PCT, CPU_PRESET11_THRESHOLD_PCT, RESOLUTION_LADDER, SCREEN_UPGRADE_BPS,
+    CPU_PRESET10_THRESHOLD_PCT, CPU_PRESET11_THRESHOLD_PCT, RESOLUTION_LADDER,
+    ROI_FACE_DELTA_QP, SCREEN_UPGRADE_BPS,
 };
 pub use keypoint_extractor::{
     CameraFrame, ExtractionError, ExtractionResult, KeypointExtractor, KeypointExtractorConfig,

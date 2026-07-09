@@ -448,8 +448,9 @@ fn decode_fb(kind: u8, fb: &[u8]) -> Option<IpcEvent> {
                 screen_refinement_bps: t.u32_at(4),
                 xfer_bps: t.u32_at(5),
                 display_resolution: crate::gear_policy::select_resolution(screen_coarse_bps),
-                // Derived field; not carried on the wire — caller recomputes from gear constraints.
+                // Derived fields; not carried on the wire — caller recomputes from gear constraints.
                 per_frame_byte_cap: 0,
+                roi_delta_qp: 0,
             };
             Some(IpcEvent::StreamBudget { budgets, rtt_ms: t.u32_at(6), loss_pct: t.f32_at(7) })
         }
@@ -881,6 +882,7 @@ mod tests {
             xfer_bps: 10_000,
             display_resolution: crate::gear_policy::select_resolution(20_000),
             per_frame_byte_cap: 0,
+            roi_delta_qp: 0,
         };
         let ev = roundtrip(IpcEvent::StreamBudget {
             budgets,
