@@ -16,6 +16,7 @@ pub mod audit;
 pub mod chat;
 pub mod clipboard;
 pub mod grants;
+pub mod panic_key;
 pub mod session_records;
 
 pub use audit::{AuditEntry, AuditLog};
@@ -31,4 +32,5 @@ pub use grants::{
     FileGrant, FileSession,
     ViewGrant, ViewSession,
 };
+pub use panic_key::{PanicController, PanicEffect};
 pub use session_records::{SessionRecord, SessionRecordStore, Tier};
