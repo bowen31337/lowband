@@ -38,6 +38,7 @@ pub mod input_injection;
 pub mod intra_refresh;
 #[cfg(feature = "ipc")]
 pub mod ipc;
+pub mod keypoint_extractor;
 pub mod screen_capture;
 pub mod synthesis_network;
 pub mod temporal_svc;
@@ -66,6 +67,10 @@ pub use gear_policy::{
     allocate, gear_b_preset_from_cpu_pct, select_resolution, Av1EncodeCapability, CameraGear,
     DisplayResolution, GearConstraints, StreamBudgets, AUDIO_FLOOR_BPS,
     CPU_PRESET10_THRESHOLD_PCT, CPU_PRESET11_THRESHOLD_PCT, RESOLUTION_LADDER, SCREEN_UPGRADE_BPS,
+};
+pub use keypoint_extractor::{
+    CameraFrame, ExtractionError, ExtractionResult, KeypointExtractor, KeypointExtractorConfig,
+    EXPRESSION_DIM,
 };
 pub use synthesis_network::{
     ExpressionLatents, HeadPose, HeadResolution, Keypoint3D, MotionLatents,
