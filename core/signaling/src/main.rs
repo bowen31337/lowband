@@ -4,7 +4,13 @@ use lowband_signaling::{router, AppState};
 async fn main() {
     let addr = std::env::var("SIGNALING_BIND").unwrap_or_else(|_| "0.0.0.0:3478".into());
     let db_path = std::env::var("SIGNALING_DB").unwrap_or_else(|_| ":memory:".into());
-    let state = AppState::open(&db_path).unwrap_or_else(|e| {
+    let turn_url =
+        std::env::var("TURN_URL").unwrap_or_else(|_| "turn:turn.example.com:3478".into());
+    let turn_secret = std::env::var("TURN_SHARED_SECRET").unwrap_or_else(|_| {
+        eprintln!("lowband-signaling: TURN_SHARED_SECRET not set; credentials will be insecure");
+        "changeme".into()
+    });
+    let state = AppState::open(&db_path, vec![turn_url], turn_secret).unwrap_or_else(|e| {
         eprintln!("lowband-signaling: open db {db_path}: {e}");
         std::process::exit(1);
     });
