@@ -36,6 +36,7 @@ pub mod intra_refresh;
 #[cfg(feature = "ipc")]
 pub mod ipc;
 pub mod screen_capture;
+pub mod temporal_svc;
 pub mod thermal;
 pub mod tier;
 pub mod uac;
@@ -47,6 +48,10 @@ pub use elevation::{ElevationKind, ElevationOutcome, ElevationRequest, Escalatio
 pub use elevation::WinElevationBridge;
 pub use input_injection::{InputBroker, InputEvent, InjectionError, MouseButton};
 pub use intra_refresh::{IntraRefreshFrame, IntraRefreshState};
+pub use temporal_svc::{
+    TemporalLayerAssigner, TemporalLayerId, TemporalSvcController, TemporalSvcMode,
+    OVERUSE_ESCALATE_TICKS, UNDERUSE_RELAX_TICKS, T0, T1, T2,
+};
 pub use screen_capture::{CaptureError, CaptureFrame, DirtyRect, ScreenCaptureBroker};
 pub use gear_policy::{
     allocate, select_resolution, Av1EncodeCapability, CameraGear, DisplayResolution,
