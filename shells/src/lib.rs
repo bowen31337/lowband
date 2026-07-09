@@ -3,7 +3,7 @@
 //! | Feature | Description |
 //! |---------|-------------|
 //! | 33  | User can export the audit_log, which saves to a tamper-evident json file |
-//! | 123 | UI displays an AI-reconstructed badge on the camera stream whenever Gear A is live |
+//! | 147 | UI displays an AI-reconstructed badge while any neural gear is live |
 //! | 149 | UI displays zero networking_questions to the assisted user during join |
 //! | 150 | App survives a crash with ui_shell isolation and never drops the underlying call |
 //! | 151 | UI displays a session summary with capabilities used and total data consumed |

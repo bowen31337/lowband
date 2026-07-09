@@ -1,12 +1,14 @@
-//! AI-reconstructed badge — Feature 123.
+//! AI-reconstructed badge — Feature 147.
 //!
 //! Tracks the active camera gear from `GearUpdate` IPC events and exposes
 //! the badge state the UI shell should render over the camera stream.
 //!
-//! When the neural talking-head codec (Gear A) is live the UI **must** show a
-//! violet "AI-reconstructed" badge on the camera stream (design-system colour
-//! [`BADGE_COLOR`]).  The badge is hidden for all other gears and when the
-//! camera is off.
+//! Whenever **any neural gear** is live the UI **must** show a violet
+//! "AI-reconstructed" badge on the camera stream (design-system colour
+//! [`BADGE_COLOR`]).  The badge is hidden for all non-neural gears and when
+//! the camera is off.  Gear A is currently the only neural gear; the badge
+//! logic delegates to [`CameraGear::is_neural`] so future neural variants are
+//! covered automatically.
 //!
 //! # Usage
 //!
@@ -30,7 +32,7 @@ use lowband_platform::CameraGear;
 /// Whether the AI-reconstructed badge should be displayed on the camera stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BadgeState {
-    /// Badge is not shown; active gear is Gear B, Gear C, or camera is off.
+    /// Badge is not shown; active gear is non-neural (Gear B, Gear C) or camera is off.
     Hidden,
     /// Badge must be rendered with label [`BADGE_LABEL`] in colour [`BADGE_COLOR`].
     Visible,
@@ -68,9 +70,10 @@ impl GearBadge {
         if self.is_ai_reconstructed() { BadgeState::Visible } else { BadgeState::Hidden }
     }
 
-    /// `true` when the neural talking-head codec (Gear A) is the active gear.
+    /// `true` when the active gear is a neural codec that requires the
+    /// AI-reconstructed disclosure badge.
     pub fn is_ai_reconstructed(&self) -> bool {
-        self.current_gear == Some(CameraGear::GearA)
+        self.current_gear.map_or(false, CameraGear::is_neural)
     }
 }
 
@@ -151,5 +154,38 @@ mod tests {
     #[test]
     fn badge_color_is_neural_violet() {
         assert_eq!(BADGE_COLOR, "#7c3aed");
+    }
+
+    // ── Feature 147: badge tied to CameraGear::is_neural, not to a specific variant ──
+
+    #[test]
+    fn badge_state_matches_is_neural_for_all_gears() {
+        let gears = [
+            CameraGear::GearA,
+            CameraGear::GearB { svt_preset: 10 },
+            CameraGear::GearB { svt_preset: 11 },
+            CameraGear::GearB { svt_preset: 12 },
+            CameraGear::GearC,
+            CameraGear::Off,
+        ];
+        for gear in gears {
+            let mut b = GearBadge::default();
+            let state = b.update(gear);
+            if gear.is_neural() {
+                assert_eq!(state, BadgeState::Visible, "{gear:?} is neural but badge was Hidden");
+            } else {
+                assert_eq!(state, BadgeState::Hidden, "{gear:?} is not neural but badge was Visible");
+            }
+        }
+    }
+
+    #[test]
+    fn gear_a_is_the_only_neural_gear() {
+        assert!(CameraGear::GearA.is_neural());
+        assert!(!CameraGear::GearB { svt_preset: 10 }.is_neural());
+        assert!(!CameraGear::GearB { svt_preset: 11 }.is_neural());
+        assert!(!CameraGear::GearB { svt_preset: 12 }.is_neural());
+        assert!(!CameraGear::GearC.is_neural());
+        assert!(!CameraGear::Off.is_neural());
     }
 }

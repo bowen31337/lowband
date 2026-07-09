@@ -201,6 +201,18 @@ pub enum CameraGear {
     Off,
 }
 
+impl CameraGear {
+    /// Returns `true` when this gear uses a neural/synthesis codec that warrants
+    /// the AI-reconstructed disclosure badge (Feature 147).
+    ///
+    /// Currently only [`CameraGear::GearA`] (the talking-head synthesis network)
+    /// qualifies.  Any future neural variant must be added here.
+    #[inline]
+    pub fn is_neural(self) -> bool {
+        matches!(self, CameraGear::GearA)
+    }
+}
+
 /// Constraints that the governor applies to every encoder after reading
 /// thermal pressure.
 ///
@@ -346,6 +358,7 @@ impl GearConstraints {
     pub fn neural_camera_allowed(&self) -> bool {
         self.max_camera_gear == CameraGear::GearA
     }
+
 
     /// Returns `true` if any camera output is permitted.
     #[inline]
