@@ -28,6 +28,7 @@ pub use clipboard::{
 pub use grants::{
     CapabilityError,
     ConsentGrant,
+    ConsentRevocationHandle,
     ControlGrant, ControlSession,
     FileGrant, FileSession,
     ViewGrant, ViewSession,

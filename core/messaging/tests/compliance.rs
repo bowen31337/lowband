@@ -7,7 +7,10 @@
 use lowband_messaging::{
     audit::AuditLog,
     clipboard::{ClipboardError, ClipboardGrant, ClipboardSession},
-    grants::{CapabilityError, ControlGrant, ControlSession, FileGrant, FileSession, ViewGrant, ViewSession},
+    grants::{
+        CapabilityError, ConsentGrant,
+        ControlGrant, ControlSession, FileGrant, FileSession, ViewGrant, ViewSession,
+    },
 };
 
 // Deterministic 32-byte session key shared across UC-4 tests.
@@ -270,4 +273,54 @@ fn uc4_all_grants_enforced_and_audit_log_persisted() {
         assert!(json.contains(label), "export_json must contain '{label}';\njson={json}");
     }
     assert!(json.contains("\"signature\""), "export_json must include signature field");
+}
+
+// ── Consent withdrawal — all four tokens invalidated by a single call ─────────
+
+#[test]
+fn uc4_all_tokens_invalidated_instantly_on_consent_withdrawal() {
+    // Issue all three non-clipboard grants from ConsentGrant and bind clipboard
+    // to the same handle.
+    let (view_grant, ctrl_grant, file_grant, handle) = ConsentGrant::new().issue_all();
+    let clipboard_grant = ClipboardGrant::with_consent(handle.clone());
+
+    let mut view      = ViewSession::new();
+    let mut control   = ControlSession::new();
+    let mut file      = FileSession::new();
+    let mut clipboard = ClipboardSession::new();
+
+    view.set_grant(Some(view_grant));
+    control.set_grant(Some(ctrl_grant));
+    file.set_grant(Some(file_grant));
+    clipboard.set_grant(Some(clipboard_grant));
+
+    // All four accept while consent is active.
+    assert!(view.apply_frame().is_ok(),              "view must accept before withdrawal");
+    assert!(control.apply_event().is_ok(),           "control must accept before withdrawal");
+    assert!(file.apply_chunk(b"data").is_ok(),       "file must accept before withdrawal");
+    assert!(clipboard.apply_remote("hello").is_ok(), "clipboard must accept before withdrawal");
+
+    // Single withdrawal — all four invalidated atomically.
+    handle.withdraw();
+
+    assert_eq!(
+        view.apply_frame(),
+        Err(CapabilityError::ConsentWithdrawn),
+        "view must be rejected instantly after consent withdrawal",
+    );
+    assert_eq!(
+        control.apply_event(),
+        Err(CapabilityError::ConsentWithdrawn),
+        "control must be rejected instantly after consent withdrawal",
+    );
+    assert_eq!(
+        file.apply_chunk(b"data"),
+        Err(CapabilityError::ConsentWithdrawn),
+        "file must be rejected instantly after consent withdrawal",
+    );
+    assert_eq!(
+        clipboard.apply_remote("hello"),
+        Err(ClipboardError::ConsentWithdrawn),
+        "clipboard must be rejected instantly after consent withdrawal",
+    );
 }

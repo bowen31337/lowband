@@ -44,6 +44,8 @@
 //! );
 //! ```
 
+use crate::grants::ConsentRevocationHandle;
+
 /// Maximum UTF-8 byte count for a clipboard text payload (Feature 113).
 ///
 /// Bounding the payload ensures that a clipboard frame transmitted at the
@@ -66,15 +68,31 @@ pub const CONSTRAINED_TIER_BPS: u64 = 150_000;
 
 /// Capability token that proves the remote peer's clipboard permission is
 /// currently active.  Issued by the consent subsystem; drop to revoke.
+///
+/// Created via [`ClipboardGrant::new`] or [`ClipboardGrant::with_consent`].
 #[derive(Debug)]
 pub struct ClipboardGrant {
-    _private: (),
+    revocation: Option<ConsentRevocationHandle>,
 }
 
 impl ClipboardGrant {
     /// Issue a new grant.  Only the consent subsystem should call this.
     pub fn new() -> Self {
-        Self { _private: () }
+        Self { revocation: None }
+    }
+
+    /// Issue a clipboard grant bound to a [`ConsentRevocationHandle`].
+    ///
+    /// The grant is invalidated instantly — with no grace window — when
+    /// [`ConsentRevocationHandle::withdraw`] is called on any clone of `handle`.
+    pub fn with_consent(handle: ConsentRevocationHandle) -> Self {
+        Self { revocation: Some(handle) }
+    }
+}
+
+impl Default for ClipboardGrant {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -89,6 +107,9 @@ pub enum ClipboardError {
         /// Actual byte length of the rejected text.
         len: usize,
     },
+    /// The assisted user withdrew consent; the token bound to the same
+    /// [`ConsentRevocationHandle`] is invalidated with no grace window.
+    ConsentWithdrawn,
 }
 
 impl std::fmt::Display for ClipboardError {
@@ -99,6 +120,9 @@ impl std::fmt::Display for ClipboardError {
                 f,
                 "clipboard text is {len} bytes, exceeds limit of {CLIPBOARD_MAX_TEXT_BYTES}"
             ),
+            Self::ConsentWithdrawn => {
+                f.write_str("remote clipboard rejected: assisted user has withdrawn consent")
+            }
         }
     }
 }
@@ -125,23 +149,33 @@ impl ClipboardSession {
         self.grant = grant;
     }
 
-    /// Returns `true` when a [`ClipboardGrant`] is currently held.
+    /// Returns `true` when a non-withdrawn [`ClipboardGrant`] is currently held.
     pub fn is_granted(&self) -> bool {
-        self.grant.is_some()
+        match &self.grant {
+            None => false,
+            Some(g) => !g.revocation.as_ref().map_or(false, |r| r.is_withdrawn()),
+        }
     }
 
     /// Apply incoming remote clipboard text if and only if the capability token
     /// is active and the payload is within the size limit.
     ///
-    /// Returns [`ClipboardError::NoActiveGrant`] if no grant is held, or
+    /// Returns [`ClipboardError::ConsentWithdrawn`] when the assisted user has
+    /// withdrawn consent via the bound [`ConsentRevocationHandle`],
+    /// [`ClipboardError::NoActiveGrant`] if no grant is held, or
     /// [`ClipboardError::TextTooLong`] if `text.len() > CLIPBOARD_MAX_TEXT_BYTES`.
     ///
     /// On success the caller is responsible for writing `text` to the local OS
     /// clipboard (platform specifics live outside this crate).  On failure the
     /// frame must be discarded without modifying local clipboard state.
     pub fn apply_remote(&self, text: &str) -> Result<(), ClipboardError> {
-        if self.grant.is_none() {
-            return Err(ClipboardError::NoActiveGrant);
+        match &self.grant {
+            None => return Err(ClipboardError::NoActiveGrant),
+            Some(g) => {
+                if g.revocation.as_ref().map_or(false, |r| r.is_withdrawn()) {
+                    return Err(ClipboardError::ConsentWithdrawn);
+                }
+            }
         }
         if text.len() > CLIPBOARD_MAX_TEXT_BYTES {
             return Err(ClipboardError::TextTooLong { len: text.len() });
@@ -163,6 +197,7 @@ impl Default for ClipboardSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grants::ConsentRevocationHandle;
 
     #[test]
     fn rejects_without_grant() {
@@ -321,6 +356,50 @@ mod tests {
             forward_ms,
             ack_ms,
             NETWORK_RTT_MS,
+        );
+    }
+
+    // ── Consent withdrawal — instant invalidation ─────────────────────────────
+
+    #[test]
+    fn consent_withdrawal_invalidates_clipboard_grant_instantly() {
+        let handle = ConsentRevocationHandle::new();
+        let mut session = ClipboardSession::new();
+        session.set_grant(Some(ClipboardGrant::with_consent(handle.clone())));
+        assert!(session.apply_remote("text").is_ok(), "must accept before withdrawal");
+        handle.withdraw();
+        assert_eq!(
+            session.apply_remote("text"),
+            Err(ClipboardError::ConsentWithdrawn),
+            "clipboard must be rejected instantly on consent withdrawal",
+        );
+    }
+
+    #[test]
+    fn is_granted_false_after_consent_withdrawal() {
+        let handle = ConsentRevocationHandle::new();
+        let mut session = ClipboardSession::new();
+        session.set_grant(Some(ClipboardGrant::with_consent(handle.clone())));
+        assert!(session.is_granted());
+        handle.withdraw();
+        assert!(!session.is_granted(), "is_granted must be false after consent withdrawal");
+    }
+
+    #[test]
+    fn consent_withdrawn_error_display_is_nonempty() {
+        assert!(!ClipboardError::ConsentWithdrawn.to_string().is_empty());
+    }
+
+    #[test]
+    fn size_gate_still_enforced_when_withdrawal_not_triggered() {
+        let handle = ConsentRevocationHandle::new();
+        let mut session = ClipboardSession::new();
+        session.set_grant(Some(ClipboardGrant::with_consent(handle.clone())));
+        let too_long = "x".repeat(CLIPBOARD_MAX_TEXT_BYTES + 1);
+        assert_eq!(
+            session.apply_remote(&too_long),
+            Err(ClipboardError::TextTooLong { len: CLIPBOARD_MAX_TEXT_BYTES + 1 }),
+            "size gate must still fire even when withdrawal has not been triggered",
         );
     }
 }

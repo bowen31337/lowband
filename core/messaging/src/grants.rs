@@ -30,6 +30,57 @@
 //! assert_eq!(session.apply_frame(), Err(CapabilityError::NoActiveGrant));
 //! ```
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+// ── ConsentRevocationHandle ───────────────────────────────────────────────────
+
+/// Shared revocation signal for all capability tokens issued from one consent event.
+///
+/// Pass clones of this handle to [`ViewGrant::with_consent`],
+/// [`ControlGrant::with_consent`], [`FileGrant::with_consent`], and
+/// [`ClipboardGrant::with_consent`] when issuing grants.  A single call to
+/// [`withdraw`] instantly invalidates every token bound to the same handle —
+/// the very next `apply_*` call on each bound session returns
+/// [`CapabilityError::ConsentWithdrawn`] (or its clipboard equivalent) with no
+/// grace window.
+///
+/// [`withdraw`]: ConsentRevocationHandle::withdraw
+/// [`ClipboardGrant::with_consent`]: crate::clipboard::ClipboardGrant::with_consent
+#[derive(Clone)]
+pub struct ConsentRevocationHandle(Arc<AtomicBool>);
+
+impl ConsentRevocationHandle {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Signal consent withdrawal.  All tokens bound to this handle reject their
+    /// next operation with [`CapabilityError::ConsentWithdrawn`].
+    pub fn withdraw(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    /// `true` if [`withdraw`] has been called on any clone of this handle.
+    ///
+    /// [`withdraw`]: Self::withdraw
+    pub fn is_withdrawn(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+impl std::fmt::Debug for ConsentRevocationHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConsentRevocationHandle")
+            .field("withdrawn", &self.is_withdrawn())
+            .finish()
+    }
+}
+
+// ── CapabilityError ───────────────────────────────────────────────────────────
+
 /// Error returned when an operation is attempted without an active capability grant.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CapabilityError {
@@ -38,13 +89,17 @@ pub enum CapabilityError {
     /// The operation was rejected because the consent_grant TTL has elapsed.
     /// Equivalent to revocation for all enforcement purposes.
     GrantExpired,
+    /// The assisted user withdrew consent; the capability token bound to the
+    /// same [`ConsentRevocationHandle`] is invalidated with no grace window.
+    ConsentWithdrawn,
 }
 
 impl std::fmt::Display for CapabilityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoActiveGrant => write!(f, "operation rejected: no active capability grant"),
-            Self::GrantExpired  => write!(f, "operation rejected: consent_grant has expired"),
+            Self::NoActiveGrant    => write!(f, "operation rejected: no active capability grant"),
+            Self::GrantExpired     => write!(f, "operation rejected: consent_grant has expired"),
+            Self::ConsentWithdrawn => write!(f, "operation rejected: assisted user has withdrawn consent"),
         }
     }
 }
@@ -55,17 +110,19 @@ impl std::error::Error for CapabilityError {}
 
 /// Capability token for screen-view access.  Drop to revoke.
 ///
-/// Created via [`ViewGrant::new`] (no expiry) or
-/// [`ViewGrant::with_duration`] (expires after the given TTL).
+/// Created via [`ViewGrant::new`] (no expiry),
+/// [`ViewGrant::with_duration`] (expires after the given TTL), or
+/// [`ViewGrant::with_consent`] (tied to a [`ConsentRevocationHandle`]).
 #[derive(Debug)]
 pub struct ViewGrant {
     expires_at: Option<std::time::Instant>,
+    revocation: Option<ConsentRevocationHandle>,
 }
 
 impl ViewGrant {
     /// Issue a new view grant that never expires.
     pub fn new() -> Self {
-        Self { expires_at: None }
+        Self { expires_at: None, revocation: None }
     }
 
     /// Issue a new view grant that expires after `duration`.
@@ -73,7 +130,15 @@ impl ViewGrant {
     /// Once `duration` has elapsed, [`ViewSession::apply_frame`] returns
     /// [`CapabilityError::GrantExpired`] and capture is rejected.
     pub fn with_duration(duration: std::time::Duration) -> Self {
-        Self { expires_at: Some(std::time::Instant::now() + duration) }
+        Self { expires_at: Some(std::time::Instant::now() + duration), revocation: None }
+    }
+
+    /// Issue a view grant bound to a [`ConsentRevocationHandle`].
+    ///
+    /// The grant is invalidated instantly — with no grace window — when
+    /// [`ConsentRevocationHandle::withdraw`] is called on any clone of `handle`.
+    pub fn with_consent(handle: ConsentRevocationHandle) -> Self {
+        Self { expires_at: None, revocation: Some(handle) }
     }
 
     /// `true` if the consent_grant TTL has elapsed.
@@ -104,22 +169,36 @@ impl ViewSession {
         self.grant = grant;
     }
 
-    /// `true` while a non-expired [`ViewGrant`] is held.
+    /// `true` while a non-expired, non-withdrawn [`ViewGrant`] is held.
     pub fn is_granted(&self) -> bool {
-        self.grant.as_ref().map_or(false, |g| !g.is_expired())
+        match &self.grant {
+            None => false,
+            Some(g) => {
+                !g.revocation.as_ref().map_or(false, |r| r.is_withdrawn()) && !g.is_expired()
+            }
+        }
     }
 
-    /// Accept an incoming screen frame if and only if a non-expired
-    /// [`ViewGrant`] is held.
+    /// Accept an incoming screen frame if and only if a non-expired,
+    /// non-withdrawn [`ViewGrant`] is held.
     ///
-    /// Returns [`CapabilityError::GrantExpired`] when a grant is present but
-    /// its consent_grant TTL has elapsed, and [`CapabilityError::NoActiveGrant`]
-    /// when no grant has been issued.
+    /// Returns [`CapabilityError::ConsentWithdrawn`] when the assisted user has
+    /// withdrawn consent via the bound [`ConsentRevocationHandle`],
+    /// [`CapabilityError::GrantExpired`] when a grant is present but its TTL
+    /// has elapsed, and [`CapabilityError::NoActiveGrant`] when no grant has
+    /// been issued.
     pub fn apply_frame(&self) -> Result<(), CapabilityError> {
         match &self.grant {
             None => Err(CapabilityError::NoActiveGrant),
-            Some(g) if g.is_expired() => Err(CapabilityError::GrantExpired),
-            Some(_) => Ok(()),
+            Some(g) => {
+                if g.revocation.as_ref().map_or(false, |r| r.is_withdrawn()) {
+                    return Err(CapabilityError::ConsentWithdrawn);
+                }
+                if g.is_expired() {
+                    return Err(CapabilityError::GrantExpired);
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -134,17 +213,19 @@ impl Default for ViewSession {
 
 /// Capability token for remote input injection.  Drop to revoke.
 ///
-/// Created via [`ControlGrant::new`] (no expiry) or
-/// [`ControlGrant::with_duration`] (expires after the given TTL).
+/// Created via [`ControlGrant::new`] (no expiry),
+/// [`ControlGrant::with_duration`] (expires after the given TTL), or
+/// [`ControlGrant::with_consent`] (tied to a [`ConsentRevocationHandle`]).
 #[derive(Debug)]
 pub struct ControlGrant {
     expires_at: Option<std::time::Instant>,
+    revocation: Option<ConsentRevocationHandle>,
 }
 
 impl ControlGrant {
     /// Issue a new control grant that never expires.
     pub fn new() -> Self {
-        Self { expires_at: None }
+        Self { expires_at: None, revocation: None }
     }
 
     /// Issue a new control grant that expires after `duration`.
@@ -152,7 +233,15 @@ impl ControlGrant {
     /// Once `duration` has elapsed, [`ControlSession::apply_event`] returns
     /// [`CapabilityError::GrantExpired`] and injection is rejected.
     pub fn with_duration(duration: std::time::Duration) -> Self {
-        Self { expires_at: Some(std::time::Instant::now() + duration) }
+        Self { expires_at: Some(std::time::Instant::now() + duration), revocation: None }
+    }
+
+    /// Issue a control grant bound to a [`ConsentRevocationHandle`].
+    ///
+    /// The grant is invalidated instantly — with no grace window — when
+    /// [`ConsentRevocationHandle::withdraw`] is called on any clone of `handle`.
+    pub fn with_consent(handle: ConsentRevocationHandle) -> Self {
+        Self { expires_at: None, revocation: Some(handle) }
     }
 
     /// `true` if the consent_grant TTL has elapsed.
@@ -183,22 +272,36 @@ impl ControlSession {
         self.grant = grant;
     }
 
-    /// `true` while a non-expired [`ControlGrant`] is held.
+    /// `true` while a non-expired, non-withdrawn [`ControlGrant`] is held.
     pub fn is_granted(&self) -> bool {
-        self.grant.as_ref().map_or(false, |g| !g.is_expired())
+        match &self.grant {
+            None => false,
+            Some(g) => {
+                !g.revocation.as_ref().map_or(false, |r| r.is_withdrawn()) && !g.is_expired()
+            }
+        }
     }
 
-    /// Validate an incoming control event if and only if a non-expired
-    /// [`ControlGrant`] is held.
+    /// Validate an incoming control event if and only if a non-expired,
+    /// non-withdrawn [`ControlGrant`] is held.
     ///
-    /// Returns [`CapabilityError::GrantExpired`] when a grant is present but
-    /// its consent_grant TTL has elapsed, and [`CapabilityError::NoActiveGrant`]
-    /// when no grant has been issued.
+    /// Returns [`CapabilityError::ConsentWithdrawn`] when the assisted user has
+    /// withdrawn consent via the bound [`ConsentRevocationHandle`],
+    /// [`CapabilityError::GrantExpired`] when a grant is present but its TTL
+    /// has elapsed, and [`CapabilityError::NoActiveGrant`] when no grant has
+    /// been issued.
     pub fn apply_event(&self) -> Result<(), CapabilityError> {
         match &self.grant {
             None => Err(CapabilityError::NoActiveGrant),
-            Some(g) if g.is_expired() => Err(CapabilityError::GrantExpired),
-            Some(_) => Ok(()),
+            Some(g) => {
+                if g.revocation.as_ref().map_or(false, |r| r.is_withdrawn()) {
+                    return Err(CapabilityError::ConsentWithdrawn);
+                }
+                if g.is_expired() {
+                    return Err(CapabilityError::GrantExpired);
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -212,15 +315,25 @@ impl Default for ControlSession {
 // ── FileGrant / FileSession ───────────────────────────────────────────────────
 
 /// Capability token for file-transfer access.  Drop to revoke.
+///
+/// Created via [`FileGrant::new`] or [`FileGrant::with_consent`].
 #[derive(Debug)]
 pub struct FileGrant {
-    _private: (),
+    revocation: Option<ConsentRevocationHandle>,
 }
 
 impl FileGrant {
     /// Issue a new file grant.  Only the consent subsystem should call this.
     pub fn new() -> Self {
-        Self { _private: () }
+        Self { revocation: None }
+    }
+
+    /// Issue a file grant bound to a [`ConsentRevocationHandle`].
+    ///
+    /// The grant is invalidated instantly — with no grace window — when
+    /// [`ConsentRevocationHandle::withdraw`] is called on any clone of `handle`.
+    pub fn with_consent(handle: ConsentRevocationHandle) -> Self {
+        Self { revocation: Some(handle) }
     }
 }
 
@@ -246,17 +359,30 @@ impl FileSession {
         self.grant = grant;
     }
 
-    /// `true` while a [`FileGrant`] is held.
+    /// `true` while a non-withdrawn [`FileGrant`] is held.
     pub fn is_granted(&self) -> bool {
-        self.grant.is_some()
+        match &self.grant {
+            None => false,
+            Some(g) => !g.revocation.as_ref().map_or(false, |r| r.is_withdrawn()),
+        }
     }
 
-    /// Accept an incoming file chunk if and only if a [`FileGrant`] is held.
+    /// Accept an incoming file chunk if and only if a non-withdrawn
+    /// [`FileGrant`] is held.
+    ///
+    /// Returns [`CapabilityError::ConsentWithdrawn`] when the assisted user has
+    /// withdrawn consent via the bound [`ConsentRevocationHandle`], or
+    /// [`CapabilityError::NoActiveGrant`] when no grant has been issued.
     pub fn apply_chunk(&self, _bytes: &[u8]) -> Result<(), CapabilityError> {
-        if self.grant.is_none() {
-            return Err(CapabilityError::NoActiveGrant);
+        match &self.grant {
+            None => Err(CapabilityError::NoActiveGrant),
+            Some(g) => {
+                if g.revocation.as_ref().map_or(false, |r| r.is_withdrawn()) {
+                    return Err(CapabilityError::ConsentWithdrawn);
+                }
+                Ok(())
+            }
         }
-        Ok(())
     }
 }
 
@@ -273,6 +399,11 @@ impl Default for FileSession {
 ///
 /// When the grant expires both `apply_frame` and `apply_event` on the
 /// associated sessions return [`CapabilityError::GrantExpired`].
+///
+/// Use [`issue_all`] to get all four capability grants and a shared
+/// [`ConsentRevocationHandle`] that can invalidate them all instantly.
+///
+/// [`issue_all`]: ConsentGrant::issue_all
 ///
 /// # Example
 ///
@@ -316,11 +447,31 @@ impl ConsentGrant {
                 // Both grants share the same expiry moment.
                 let exp = std::time::Instant::now() + d;
                 (
-                    ViewGrant    { expires_at: Some(exp) },
-                    ControlGrant { expires_at: Some(exp) },
+                    ViewGrant    { expires_at: Some(exp), revocation: None },
+                    ControlGrant { expires_at: Some(exp), revocation: None },
                 )
             }
         }
+    }
+
+    /// Consume the consent grant and return view, control, and file grants all
+    /// bound to the same [`ConsentRevocationHandle`].
+    ///
+    /// Calling [`ConsentRevocationHandle::withdraw`] on the returned handle
+    /// (or any clone of it) instantly invalidates all three grants.  To also
+    /// bind clipboard access, pass a clone of the handle to
+    /// [`ClipboardGrant::with_consent`].
+    ///
+    /// [`ClipboardGrant::with_consent`]: crate::clipboard::ClipboardGrant::with_consent
+    pub fn issue_all(self) -> (ViewGrant, ControlGrant, FileGrant, ConsentRevocationHandle) {
+        let handle = ConsentRevocationHandle::new();
+        let exp = self.duration.map(|d| std::time::Instant::now() + d);
+        (
+            ViewGrant    { expires_at: exp, revocation: Some(handle.clone()) },
+            ControlGrant { expires_at: exp, revocation: Some(handle.clone()) },
+            FileGrant    { revocation: Some(handle.clone()) },
+            handle,
+        )
     }
 }
 
@@ -565,5 +716,135 @@ mod tests {
     fn capability_error_display_is_nonempty() {
         assert!(!CapabilityError::NoActiveGrant.to_string().is_empty());
         assert!(!CapabilityError::GrantExpired.to_string().is_empty());
+        assert!(!CapabilityError::ConsentWithdrawn.to_string().is_empty());
+    }
+
+    // ConsentRevocationHandle — instant withdrawal ────────────────────────────
+
+    #[test]
+    fn revocation_handle_not_withdrawn_on_creation() {
+        let handle = ConsentRevocationHandle::new();
+        assert!(!handle.is_withdrawn());
+    }
+
+    #[test]
+    fn revocation_handle_withdrawn_after_withdraw_call() {
+        let handle = ConsentRevocationHandle::new();
+        handle.withdraw();
+        assert!(handle.is_withdrawn());
+    }
+
+    #[test]
+    fn revocation_handle_clone_sees_withdrawal() {
+        let handle = ConsentRevocationHandle::new();
+        let clone = handle.clone();
+        handle.withdraw();
+        assert!(clone.is_withdrawn(), "cloned handle must reflect withdrawal on original");
+    }
+
+    #[test]
+    fn view_grant_rejects_instantly_on_consent_withdrawal() {
+        let handle = ConsentRevocationHandle::new();
+        let mut session = ViewSession::new();
+        session.set_grant(Some(ViewGrant::with_consent(handle.clone())));
+        assert!(session.apply_frame().is_ok(), "must accept before withdrawal");
+        handle.withdraw();
+        assert_eq!(
+            session.apply_frame(),
+            Err(CapabilityError::ConsentWithdrawn),
+            "view must be rejected instantly on consent withdrawal",
+        );
+    }
+
+    #[test]
+    fn view_is_granted_false_after_consent_withdrawal() {
+        let handle = ConsentRevocationHandle::new();
+        let mut session = ViewSession::new();
+        session.set_grant(Some(ViewGrant::with_consent(handle.clone())));
+        assert!(session.is_granted());
+        handle.withdraw();
+        assert!(!session.is_granted(), "is_granted must be false after consent withdrawal");
+    }
+
+    #[test]
+    fn control_grant_rejects_instantly_on_consent_withdrawal() {
+        let handle = ConsentRevocationHandle::new();
+        let mut session = ControlSession::new();
+        session.set_grant(Some(ControlGrant::with_consent(handle.clone())));
+        assert!(session.apply_event().is_ok(), "must accept before withdrawal");
+        handle.withdraw();
+        assert_eq!(
+            session.apply_event(),
+            Err(CapabilityError::ConsentWithdrawn),
+            "control must be rejected instantly on consent withdrawal",
+        );
+    }
+
+    #[test]
+    fn control_is_granted_false_after_consent_withdrawal() {
+        let handle = ConsentRevocationHandle::new();
+        let mut session = ControlSession::new();
+        session.set_grant(Some(ControlGrant::with_consent(handle.clone())));
+        assert!(session.is_granted());
+        handle.withdraw();
+        assert!(!session.is_granted(), "is_granted must be false after consent withdrawal");
+    }
+
+    #[test]
+    fn file_grant_rejects_instantly_on_consent_withdrawal() {
+        let handle = ConsentRevocationHandle::new();
+        let mut session = FileSession::new();
+        session.set_grant(Some(FileGrant::with_consent(handle.clone())));
+        assert!(session.apply_chunk(b"data").is_ok(), "must accept before withdrawal");
+        handle.withdraw();
+        assert_eq!(
+            session.apply_chunk(b"data"),
+            Err(CapabilityError::ConsentWithdrawn),
+            "file must be rejected instantly on consent withdrawal",
+        );
+    }
+
+    #[test]
+    fn file_is_granted_false_after_consent_withdrawal() {
+        let handle = ConsentRevocationHandle::new();
+        let mut session = FileSession::new();
+        session.set_grant(Some(FileGrant::with_consent(handle.clone())));
+        assert!(session.is_granted());
+        handle.withdraw();
+        assert!(!session.is_granted(), "is_granted must be false after consent withdrawal");
+    }
+
+    #[test]
+    fn consent_grant_issue_all_links_all_three_to_same_revocation_handle() {
+        let (view_grant, ctrl_grant, file_grant, handle) = ConsentGrant::new().issue_all();
+        let mut view = ViewSession::new();
+        let mut ctrl = ControlSession::new();
+        let mut file = FileSession::new();
+        view.set_grant(Some(view_grant));
+        ctrl.set_grant(Some(ctrl_grant));
+        file.set_grant(Some(file_grant));
+
+        assert!(view.apply_frame().is_ok());
+        assert!(ctrl.apply_event().is_ok());
+        assert!(file.apply_chunk(b"ok").is_ok());
+
+        handle.withdraw();
+
+        assert_eq!(view.apply_frame(),       Err(CapabilityError::ConsentWithdrawn));
+        assert_eq!(ctrl.apply_event(),       Err(CapabilityError::ConsentWithdrawn));
+        assert_eq!(file.apply_chunk(b"ok"), Err(CapabilityError::ConsentWithdrawn));
+    }
+
+    #[test]
+    fn consent_grant_issue_all_respects_timed_expiry_before_withdrawal() {
+        let (view_grant, ctrl_grant, _file_grant, _handle) =
+            ConsentGrant::with_duration(Duration::ZERO).issue_all();
+        let mut view = ViewSession::new();
+        let mut ctrl = ControlSession::new();
+        view.set_grant(Some(view_grant));
+        ctrl.set_grant(Some(ctrl_grant));
+
+        assert_eq!(view.apply_frame(), Err(CapabilityError::GrantExpired));
+        assert_eq!(ctrl.apply_event(), Err(CapabilityError::GrantExpired));
     }
 }
