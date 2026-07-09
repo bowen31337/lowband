@@ -3,6 +3,7 @@
 //! | Feature | Description |
 //! |---------|-------------|
 //! | 33  | User can export the audit_log, which saves to a tamper-evident json file |
+//! | 146 | UI shows the current tier, bitrate, RTT, and loss in an honest quality bar |
 //! | 147 | UI displays an AI-reconstructed badge while any neural gear is live |
 //! | 149 | UI displays zero networking_questions to the assisted user during join |
 //! | 150 | App survives a crash with ui_shell isolation and never drops the underlying call |
@@ -11,10 +12,12 @@
 pub mod audit_export;
 pub mod gear_badge;
 pub mod join_screen;
+pub mod quality_bar;
 pub mod session_summary;
 pub mod ui_shell;
 
 pub use audit_export::{AuditExportError, AuditExporter};
 pub use gear_badge::{BadgeState, GearBadge, BADGE_COLOR, BADGE_LABEL};
 pub use join_screen::{CodeError, ConnectError, JoinScreen, JoinState};
+pub use quality_bar::{QualityBar, QualitySnapshot, MIN_REFRESH_INTERVAL};
 pub use session_summary::{CapabilitiesUsed, SessionSummary, SessionTracker};
