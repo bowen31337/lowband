@@ -165,7 +165,15 @@ async fn get_join(
     let now = unix_now();
     match st.session_codes.get(code.as_bytes()).unwrap() {
         Some(bytes) => match decode_expires_at(&bytes) {
-            Some(exp) if exp > now => Ok(Json(serde_json::json!({ "code": code }))),
+            Some(exp) if exp > now => {
+                let offer = st.pending_offer(&code);
+                let candidates = st.pending_candidates(&code);
+                Ok(Json(serde_json::json!({
+                    "session_code": code,
+                    "offer": offer,
+                    "candidates": candidates,
+                })))
+            }
             _ => {
                 st.session_codes.remove(code.as_bytes()).ok();
                 Err(StatusCode::NOT_FOUND)
