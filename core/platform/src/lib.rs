@@ -78,6 +78,7 @@ pub mod synthesis_network;
 pub mod temporal_svc;
 pub mod thermal;
 pub mod tier;
+pub mod tier_gears;
 pub mod uac;
 
 pub use echo_canceller::{
@@ -217,6 +218,7 @@ pub use governor_summary::{
 pub use stream_drop_policy::{DropPolicy, StreamDropPolicy, StreamKind};
 pub use thermal::{ThermalMonitor, ThermalPressure};
 pub use tier::TierState;
+pub use tier_gears::{select_codec_gears, TierCodecGears};
 
 /// CPU ceiling percentage applied at the Constrained tier (Feature 160).
 ///
