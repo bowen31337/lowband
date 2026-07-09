@@ -4,6 +4,7 @@
 //! |---------|-------------|
 //! | 33  | User can export the audit_log, which saves to a tamper-evident json file |
 //! | 139 | UI shows a TCP-443 relay warning with an honest latency penalty label |
+//! | 142 | UI shows a persistent indicator whenever a capability is live on the assisted machine |
 //! | 143 | User can grant view access with view_grant but withhold control on the consent screen |
 //! | 145 | UI displays a panic control that severs injection on both sides |
 //! | 146 | UI shows the current tier, bitrate, RTT, and loss in an honest quality bar |
@@ -14,6 +15,7 @@
 //! | 152 | User can revoke session access with capability_token removal in a single click |
 
 pub mod audit_export;
+pub mod capability_indicator;
 pub mod consent_screen;
 pub mod gear_badge;
 pub mod join_screen;
@@ -25,6 +27,10 @@ pub mod session_summary;
 pub mod ui_shell;
 
 pub use audit_export::{AuditExportError, AuditExporter};
+pub use capability_indicator::{
+    CapabilityIndicator, CapabilityIndicatorState,
+    INDICATOR_COLOR, INDICATOR_LABEL,
+};
 pub use consent_screen::{
     ConsentScreen, ConsentScreenState, GrantChoice,
     CONSENT_SCREEN_TITLE,
