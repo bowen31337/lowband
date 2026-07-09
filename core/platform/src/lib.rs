@@ -53,6 +53,7 @@ pub mod opus_decoder;
 pub mod plc_chain;
 pub mod fallback_detector;
 pub mod gear_policy;
+pub mod input_channel_sender;
 pub mod input_injection;
 pub mod input_latency_budget;
 pub mod intra_refresh;
@@ -101,6 +102,12 @@ pub use fallback_detector::{
 };
 #[cfg(target_os = "windows")]
 pub use elevation::WinElevationBridge;
+pub use input_channel_sender::{
+    decode_varint_i32 as input_decode_varint,
+    encode_varint_i32 as input_encode_varint,
+    InputChannelDecoder, InputChannelSender,
+    INPUT_CHANNEL_ID, MAX_INPUT_FRAME_BYTES, SCHEDULING_PRIORITY_RANK,
+};
 pub use input_injection::{InputBroker, InputEvent, InjectionError, MouseButton};
 pub use input_latency_budget::{
     queuing_delay_ms as input_queuing_delay_ms,
