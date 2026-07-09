@@ -2,6 +2,7 @@
 //!
 //! | Feature | Description |
 //! |---------|-------------|
+//! | 56  | Jitter buffer: converges playout under 15% with time_scaling instead of gaps |
 //! | 57  | PLC chain: orders concealment — FEC decode, DRED, neural PLC, faded comfort noise |
 //! | 58  | Opus LACE: enables LACE decoder enhancement when cpu_headroom is available |
 //! | 128 | Denoise pre-filter: cleans sensor noise with denoise_prefilter before encode |
@@ -34,6 +35,7 @@ pub mod cpu_ceiling;
 pub mod cpu_telemetry;
 pub mod denoise_prefilter;
 pub mod elevation;
+pub mod jitter_buffer;
 pub mod opus_decoder;
 pub mod plc_chain;
 pub mod fallback_detector;
@@ -90,6 +92,9 @@ pub use synthesis_network::{
     ExpressionLatents, HeadPose, HeadResolution, Keypoint3D, MotionLatents,
     ReconstructedFrame, ReferenceFrame, SynthesisConfig, SynthesisError, SynthesisNetwork,
     HEAD_PX_MAX, HEAD_PX_MIN, KEYPOINT_COUNT,
+};
+pub use jitter_buffer::{
+    JitterBuffer, PlayoutAction, CONVERGENCE_ZONE_FRAMES, MAX_TIME_SCALE_RATE,
 };
 pub use opus_decoder::{
     lace_mode_from_cpu_pct, LaceMode, LACE_CPU_OVERHEAD_PCT, LACE_HEADROOM_THRESHOLD_PCT,
