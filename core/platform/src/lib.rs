@@ -54,6 +54,7 @@ pub mod plc_chain;
 pub mod fallback_detector;
 pub mod gear_policy;
 pub mod input_injection;
+pub mod input_latency_budget;
 pub mod intra_refresh;
 #[cfg(feature = "ipc")]
 pub mod ipc;
@@ -101,6 +102,13 @@ pub use fallback_detector::{
 #[cfg(target_os = "windows")]
 pub use elevation::WinElevationBridge;
 pub use input_injection::{InputBroker, InputEvent, InjectionError, MouseButton};
+pub use input_latency_budget::{
+    queuing_delay_ms as input_queuing_delay_ms,
+    total_overhead_ms as input_to_photon_overhead_ms,
+    within_sla as input_to_photon_within_sla,
+    INPUT_PACER_TICK_MS, INPUT_TO_PHOTON_FIXED_OVERHEAD_MS,
+    INPUT_TO_PHOTON_SLA_MS, MAX_BACKLOG_WITHIN_SLA,
+};
 pub use intra_refresh::{IntraRefreshFrame, IntraRefreshState};
 pub use temporal_svc::{
     TemporalLayerAssigner, TemporalLayerId, TemporalSvcController, TemporalSvcMode,
