@@ -39,6 +39,7 @@
 
 pub mod agc;
 pub mod cpu_ceiling;
+pub mod cursor_sender;
 pub mod mic_capture;
 pub mod cpu_telemetry;
 pub mod denoise_prefilter;
@@ -76,6 +77,10 @@ pub use agc::{
     AGC_MAX_GAIN, AGC_MIN_GAIN, AGC_TARGET_RMS,
 };
 pub use cpu_ceiling::{CpuCeiling, ThrottleAction};
+pub use cursor_sender::{
+    CursorPositionSampler, CURSOR_CHANNEL_HZ, CURSOR_DELTA_BYTES, CURSOR_TICK_NS,
+    decode_delta as decode_cursor_delta, encode_delta as encode_cursor_delta,
+};
 pub use cpu_telemetry::CpuTelemetry;
 pub use denoise_prefilter::DenoisePrefilter;
 pub use dred_sender::{
