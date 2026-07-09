@@ -35,6 +35,35 @@
 
 use crate::thermal::ThermalPressure;
 
+/// CPU usage (%) below which Gear B selects SVT-AV1 preset 10 (best quality).
+pub const CPU_PRESET10_THRESHOLD_PCT: f64 = 50.0;
+/// CPU usage (%) below which Gear B selects SVT-AV1 preset 11; at or above
+/// this value preset 12 (fastest) is selected.
+pub const CPU_PRESET11_THRESHOLD_PCT: f64 = 75.0;
+
+/// Select the SVT-AV1 preset for Gear B from the current process CPU usage.
+///
+/// Maps `cpu_pct` ∈ `[0, 100]` to preset 10, 11, or 12:
+///
+/// | CPU usage          | Preset | Effect                         |
+/// |--------------------|--------|--------------------------------|
+/// | < 50%              | 10     | Best quality, most CPU         |
+/// | 50% – < 75%        | 11     | Balanced                       |
+/// | ≥ 75%              | 12     | Fastest encode, minimum CPU    |
+///
+/// Used by [`GearConstraints::from_thermal_with_capability_and_cpu`] when
+/// Gear B is selected at `Fair` thermal pressure.  At `Serious` thermal the
+/// preset is always forced to 12 regardless of this function's output.
+pub fn gear_b_preset_from_cpu_pct(cpu_pct: f64) -> u8 {
+    if cpu_pct < CPU_PRESET10_THRESHOLD_PCT {
+        10
+    } else if cpu_pct < CPU_PRESET11_THRESHOLD_PCT {
+        11
+    } else {
+        12
+    }
+}
+
 /// Target frame rate used when computing the Gear B per-frame byte cap.
 ///
 /// SVT-AV1 (Gear B) targets 30 fps; the pacer uses this constant to
@@ -253,6 +282,59 @@ impl GearConstraints {
             max_camera_gear,
             screen_refinement_allowed,
             // Voice floor is invariant across all thermal levels.
+            audio_floor_bps: AUDIO_FLOOR_BPS,
+            thermal_level: pressure,
+            av1_encode: av1_cap,
+        }
+    }
+
+    /// Derive constraints using thermal pressure, AV1 capability, **and** live
+    /// CPU telemetry to select the Gear B SVT-AV1 preset.
+    ///
+    /// When Gear B is warranted by thermal pressure (`Fair`), the
+    /// `cpu_usage_pct` argument drives fine-grained preset selection via
+    /// [`gear_b_preset_from_cpu_pct`]:
+    ///
+    /// - CPU < 50% → preset 10 (best quality)
+    /// - CPU 50–75% → preset 11
+    /// - CPU ≥ 75% → preset 12
+    ///
+    /// At `Serious` thermal, the preset is always 12 regardless of
+    /// `cpu_usage_pct` — the system is already under thermal stress and needs
+    /// maximum encode speed.  All other thermal levels and the legacy-CPU
+    /// substitution rule behave identically to
+    /// [`from_thermal_with_capability`].
+    ///
+    /// Call this variant from the governor; call
+    /// [`from_thermal_with_capability`] only in contexts where CPU telemetry is
+    /// unavailable (tests, migration shims).
+    pub fn from_thermal_with_capability_and_cpu(
+        pressure: ThermalPressure,
+        av1_cap: Av1EncodeCapability,
+        cpu_usage_pct: f64,
+    ) -> Self {
+        let (max_camera_gear, screen_refinement_allowed) = match pressure {
+            ThermalPressure::Nominal => (CameraGear::GearA, true),
+            ThermalPressure::Fair => {
+                let preset = gear_b_preset_from_cpu_pct(cpu_usage_pct);
+                (CameraGear::GearB { svt_preset: preset }, true)
+            }
+            ThermalPressure::Serious => (CameraGear::GearB { svt_preset: 12 }, false),
+            ThermalPressure::Critical => (CameraGear::Off, false),
+        };
+
+        let max_camera_gear = if av1_cap == Av1EncodeCapability::Legacy {
+            match max_camera_gear {
+                CameraGear::GearA | CameraGear::GearB { .. } => CameraGear::GearC,
+                other => other,
+            }
+        } else {
+            max_camera_gear
+        };
+
+        Self {
+            max_camera_gear,
+            screen_refinement_allowed,
             audio_floor_bps: AUDIO_FLOOR_BPS,
             thermal_level: pressure,
             av1_encode: av1_cap,
@@ -675,6 +757,133 @@ mod tests {
         assert_eq!(
             b.per_frame_byte_cap, 0,
             "cap must be zero for Gear C (only applies to Gear B)"
+        );
+    }
+
+    // ── gear_b_preset_from_cpu_pct ───────────────────────────────────────────
+
+    #[test]
+    fn preset_10_below_50_pct_cpu() {
+        assert_eq!(gear_b_preset_from_cpu_pct(0.0), 10);
+        assert_eq!(gear_b_preset_from_cpu_pct(49.9), 10);
+    }
+
+    #[test]
+    fn preset_11_between_50_and_75_pct_cpu() {
+        assert_eq!(gear_b_preset_from_cpu_pct(50.0), 11);
+        assert_eq!(gear_b_preset_from_cpu_pct(74.9), 11);
+    }
+
+    #[test]
+    fn preset_12_at_75_pct_cpu_and_above() {
+        assert_eq!(gear_b_preset_from_cpu_pct(75.0), 12);
+        assert_eq!(gear_b_preset_from_cpu_pct(100.0), 12);
+    }
+
+    #[test]
+    fn preset_is_monotone_with_cpu_load() {
+        let loads = [0.0_f64, 25.0, 50.0, 60.0, 75.0, 90.0, 100.0];
+        let presets: Vec<u8> = loads.iter().map(|&p| gear_b_preset_from_cpu_pct(p)).collect();
+        for i in 1..presets.len() {
+            assert!(
+                presets[i] >= presets[i - 1],
+                "preset must not decrease as CPU load rises: {:.0}%→{:.0}% gave preset {}→{}",
+                loads[i - 1], loads[i], presets[i - 1], presets[i]
+            );
+        }
+    }
+
+    // ── from_thermal_with_capability_and_cpu ─────────────────────────────────
+
+    #[test]
+    fn fair_thermal_low_cpu_selects_preset_10() {
+        let c = GearConstraints::from_thermal_with_capability_and_cpu(
+            ThermalPressure::Fair,
+            Av1EncodeCapability::Capable,
+            20.0,
+        );
+        assert!(
+            matches!(c.max_camera_gear, CameraGear::GearB { svt_preset: 10 }),
+            "Fair thermal + low CPU must choose preset 10, got {:?}", c.max_camera_gear
+        );
+        assert!(c.screen_refinement_allowed);
+    }
+
+    #[test]
+    fn fair_thermal_mid_cpu_selects_preset_11() {
+        let c = GearConstraints::from_thermal_with_capability_and_cpu(
+            ThermalPressure::Fair,
+            Av1EncodeCapability::Capable,
+            60.0,
+        );
+        assert!(
+            matches!(c.max_camera_gear, CameraGear::GearB { svt_preset: 11 }),
+            "Fair thermal + mid CPU must choose preset 11, got {:?}", c.max_camera_gear
+        );
+    }
+
+    #[test]
+    fn fair_thermal_high_cpu_selects_preset_12() {
+        let c = GearConstraints::from_thermal_with_capability_and_cpu(
+            ThermalPressure::Fair,
+            Av1EncodeCapability::Capable,
+            80.0,
+        );
+        assert!(
+            matches!(c.max_camera_gear, CameraGear::GearB { svt_preset: 12 }),
+            "Fair thermal + high CPU must choose preset 12, got {:?}", c.max_camera_gear
+        );
+    }
+
+    #[test]
+    fn serious_thermal_forces_preset_12_regardless_of_cpu() {
+        for &cpu_pct in &[0.0_f64, 25.0, 50.0, 74.9, 100.0] {
+            let c = GearConstraints::from_thermal_with_capability_and_cpu(
+                ThermalPressure::Serious,
+                Av1EncodeCapability::Capable,
+                cpu_pct,
+            );
+            assert!(
+                matches!(c.max_camera_gear, CameraGear::GearB { svt_preset: 12 }),
+                "Serious thermal must force preset 12 at cpu_pct={cpu_pct}, got {:?}",
+                c.max_camera_gear
+            );
+            assert!(!c.screen_refinement_allowed);
+        }
+    }
+
+    #[test]
+    fn nominal_thermal_still_gives_gear_a_with_cpu_telemetry() {
+        let c = GearConstraints::from_thermal_with_capability_and_cpu(
+            ThermalPressure::Nominal,
+            Av1EncodeCapability::Capable,
+            10.0,
+        );
+        assert_eq!(c.max_camera_gear, CameraGear::GearA);
+        assert!(c.screen_refinement_allowed);
+    }
+
+    #[test]
+    fn critical_thermal_still_gives_off_with_cpu_telemetry() {
+        let c = GearConstraints::from_thermal_with_capability_and_cpu(
+            ThermalPressure::Critical,
+            Av1EncodeCapability::Capable,
+            10.0,
+        );
+        assert_eq!(c.max_camera_gear, CameraGear::Off);
+    }
+
+    #[test]
+    fn legacy_cpu_with_cpu_telemetry_gives_gear_c() {
+        // Even with low CPU load, legacy hardware must not use Gear B.
+        let c = GearConstraints::from_thermal_with_capability_and_cpu(
+            ThermalPressure::Fair,
+            Av1EncodeCapability::Legacy,
+            10.0,
+        );
+        assert_eq!(
+            c.max_camera_gear, CameraGear::GearC,
+            "legacy CPU must substitute Gear C regardless of cpu_telemetry"
         );
     }
 

@@ -6,6 +6,7 @@
 //! | 155 | Privilege escalation: per-platform elevation documented, explicit, never silent |
 //! | 160 | CPU ceiling: caps a constrained-tier session to 35% on a 2015-class laptop |
 //! | 161 | Thermal gear degradation: degrades encoder gears with thermal_pressure, never drops voice |
+//! | 162 | CPU telemetry: cpu_telemetry drives SVT-AV1 Gear B preset selection (10–12) |
 //!
 //! ## Feature 160 — CPU ceiling
 //!
@@ -28,6 +29,7 @@
 //! every network bandwidth.
 
 pub mod cpu_ceiling;
+pub mod cpu_telemetry;
 pub mod denoise_prefilter;
 pub mod elevation;
 pub mod gear_policy;
@@ -42,6 +44,7 @@ pub mod tier;
 pub mod uac;
 
 pub use cpu_ceiling::{CpuCeiling, ThrottleAction};
+pub use cpu_telemetry::CpuTelemetry;
 pub use denoise_prefilter::DenoisePrefilter;
 pub use elevation::{ElevationKind, ElevationOutcome, ElevationRequest, EscalationReason};
 #[cfg(target_os = "windows")]
@@ -54,8 +57,9 @@ pub use temporal_svc::{
 };
 pub use screen_capture::{CaptureError, CaptureFrame, DirtyRect, ScreenCaptureBroker};
 pub use gear_policy::{
-    allocate, select_resolution, Av1EncodeCapability, CameraGear, DisplayResolution,
-    GearConstraints, StreamBudgets, AUDIO_FLOOR_BPS, RESOLUTION_LADDER, SCREEN_UPGRADE_BPS,
+    allocate, gear_b_preset_from_cpu_pct, select_resolution, Av1EncodeCapability, CameraGear,
+    DisplayResolution, GearConstraints, StreamBudgets, AUDIO_FLOOR_BPS,
+    CPU_PRESET10_THRESHOLD_PCT, CPU_PRESET11_THRESHOLD_PCT, RESOLUTION_LADDER, SCREEN_UPGRADE_BPS,
 };
 pub use thermal::{ThermalMonitor, ThermalPressure};
 pub use tier::TierState;
