@@ -2,6 +2,7 @@
 //!
 //! | Feature | Description |
 //! |---------|-------------|
+//! | 51  | LBRR FEC: recovers isolated audio losses in-band with lbrr_fec redundancy |
 //! | 52  | DRED sender: sends Opus 1.5 DRED neural redundancy to reconstruct multi-hundred-millisecond loss_bursts |
 //! | 56  | Jitter buffer: converges playout under 15% with time_scaling instead of gaps |
 //! | 57  | PLC chain: orders concealment — FEC decode, DRED, neural PLC, faded comfort noise |
@@ -36,6 +37,7 @@ pub mod cpu_ceiling;
 pub mod cpu_telemetry;
 pub mod denoise_prefilter;
 pub mod dred_sender;
+pub mod lbrr_fec;
 pub mod elevation;
 pub mod jitter_buffer;
 pub mod opus_decoder;
@@ -103,6 +105,9 @@ pub use synthesis_network::{
 };
 pub use jitter_buffer::{
     JitterBuffer, PlayoutAction, CONVERGENCE_ZONE_FRAMES, MAX_TIME_SCALE_RATE,
+};
+pub use lbrr_fec::{
+    LbrrDecoder, LbrrEncoder, LBRR_ENABLE_THRESHOLD, LBRR_FRAME_DURATION_MS, LBRR_OVERHEAD_BPS,
 };
 pub use neural_vocoder::{
     audio_gear_from_tier_and_npu, AudioGear, NpuCapability,
