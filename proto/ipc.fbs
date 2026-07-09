@@ -3,7 +3,8 @@
 // Wire framing (applied outside the FlatBuffer layer):
 //   [4 bytes LE u32: body_len][1 byte: kind][body_len-1 bytes: FlatBuffer table]
 //
-// kind values: 0 = TierUpdate, 1 = StreamBudget, 2 = GearUpdate
+// kind values: 0 = TierUpdate, 1 = StreamBudget, 2 = GearUpdate,
+//              3 = AuthStringReady
 
 namespace lowband.ipc;
 
@@ -60,4 +61,18 @@ table GearUpdate {
     svt_preset:                uint8;           // SVT-AV1 preset (10–12; 0 when not GearB)
     screen_refinement_allowed: bool;            // false when thermally suspended
     thermal:                   ThermalLevel;    // level that drove this change
+}
+
+/// kind = 3 — emitted once per session immediately after the Noise-IK handshake
+/// succeeds (Feature 19) and the short_auth_string has been derived (Feature 24).
+///
+/// The UI shell must display `phrase` in a clearly visible location on the
+/// in-session screen so that the technician and the assisted user can read it
+/// aloud to each other and confirm they share the same channel.  The phrase
+/// is a three-word dash-separated string, e.g. "corn-gust-fold".
+///
+/// The shell should NOT dismiss or auto-hide the phrase — it stays visible
+/// for the entire session so either party can re-verify at any time.
+table AuthStringReady {
+    phrase: string;  // "word-word-word"; 3 lowercase words from a 256-word list
 }
