@@ -32,6 +32,7 @@ pub mod cpu_ceiling;
 pub mod cpu_telemetry;
 pub mod denoise_prefilter;
 pub mod elevation;
+pub mod fallback_detector;
 pub mod gear_policy;
 pub mod input_injection;
 pub mod intra_refresh;
@@ -47,6 +48,10 @@ pub use cpu_ceiling::{CpuCeiling, ThrottleAction};
 pub use cpu_telemetry::CpuTelemetry;
 pub use denoise_prefilter::DenoisePrefilter;
 pub use elevation::{ElevationKind, ElevationOutcome, ElevationRequest, EscalationReason};
+pub use fallback_detector::{
+    FallbackDetector, FrameAnalysis, GuardrailDetector, GuardrailTrip,
+    FORCE_GEAR_B_DEADLINE_MS, KEYPOINT_CONFIDENCE_THRESHOLD, NON_FACE_PIXEL_RATIO_THRESHOLD,
+};
 #[cfg(target_os = "windows")]
 pub use elevation::WinElevationBridge;
 pub use input_injection::{InputBroker, InputEvent, InjectionError, MouseButton};
