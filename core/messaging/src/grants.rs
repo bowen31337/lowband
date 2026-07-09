@@ -82,7 +82,7 @@ impl std::fmt::Debug for ConsentRevocationHandle {
 // ── CapabilityError ───────────────────────────────────────────────────────────
 
 /// Error returned when an operation is attempted without an active capability grant.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapabilityError {
     /// The operation was rejected because no capability grant is currently held.
     NoActiveGrant,

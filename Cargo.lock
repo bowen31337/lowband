@@ -585,6 +585,7 @@ name = "lowband-platform"
 version = "0.1.0"
 dependencies = [
  "flatbuffers",
+ "lowband-messaging",
  "windows-sys 0.59.0",
 ]
 

@@ -12,6 +12,7 @@ ipc = ["dep:flatbuffers"]
 
 [dependencies]
 flatbuffers = { version = "24", optional = true }
+lowband-messaging = { path = "../../core/messaging" }
 
 [dev-dependencies]
 

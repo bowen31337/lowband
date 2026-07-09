@@ -26,22 +26,28 @@
 //! ```no_run
 //! use lowband_platform::input_injection::{InputBroker, InputEvent, MouseButton};
 //! use lowband_platform::elevation::ElevationOutcome;
+//! use lowband_messaging::grants::{ControlGrant, ControlSession};
 //!
 //! // 1. Request the OS right (macOS: TCC prompt; Linux: portal grant; Windows: no-op).
 //! let outcome = InputBroker::request_grant();
 //! assert!(outcome.is_granted(), "input injection not granted");
 //!
-//! // 2. Open the backend.
+//! // 2. Build a ControlSession backed by a valid capability_token grant.
+//! let mut session = ControlSession::new();
+//! session.set_grant(Some(ControlGrant::new()));
+//!
+//! // 3. Open the backend.
 //! //    On Linux, pass the EI fd from org.freedesktop.portal.RemoteDesktop.
 //! //    On all other platforms pass -1.
-//! let broker = InputBroker::open(-1).expect("open broker");
+//! let broker = InputBroker::open(-1, session).expect("open broker");
 //!
-//! // 3. Inject events.
+//! // 4. Inject events — each call validates the capability_token before OS delivery.
 //! broker.inject(InputEvent::KeyPress { keycode: 0x41 }).ok(); // 'A' / KEY_A
 //! broker.inject(InputEvent::MouseMove { dx: 10.0, dy: -5.0 }).ok();
 //! ```
 
 use crate::elevation::{ElevationOutcome, ElevationRequest, EscalationReason};
+use lowband_messaging::grants::{CapabilityError, ControlSession};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -95,14 +101,23 @@ pub enum InjectionError {
     /// The backend is not available in this context (headless server, libei fd
     /// not provided, compositing session ended).
     Unavailable,
+
+    /// A capability_token check rejected the event before OS delivery.
+    ///
+    /// The inner [`CapabilityError`] distinguishes between a missing grant
+    /// ([`CapabilityError::NoActiveGrant`]), an expired TTL
+    /// ([`CapabilityError::GrantExpired`]), and an explicit consent withdrawal
+    /// ([`CapabilityError::ConsentWithdrawn`]).
+    CapabilityDenied(CapabilityError),
 }
 
 impl std::fmt::Display for InjectionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotGranted  => write!(f, "input-injection right not granted"),
-            Self::OsRejected  => write!(f, "OS rejected the injected input event"),
-            Self::Unavailable => write!(f, "input injection backend unavailable"),
+            Self::NotGranted          => write!(f, "input-injection right not granted"),
+            Self::OsRejected          => write!(f, "OS rejected the injected input event"),
+            Self::Unavailable         => write!(f, "input injection backend unavailable"),
+            Self::CapabilityDenied(e) => write!(f, "input injection rejected by capability_token: {e}"),
         }
     }
 }
@@ -112,9 +127,12 @@ impl std::fmt::Display for InjectionError {
 /// Platform input-injection broker.
 ///
 /// Wraps the correct OS API for the compile target and exposes a uniform
-/// [`inject`](Self::inject) method.  Construct via [`open`](Self::open).
+/// [`inject`](Self::inject) method.  Every inject call validates the held
+/// [`ControlSession`] capability_token before the event reaches the OS.
+/// Construct via [`open`](Self::open).
 pub struct InputBroker {
-    inner: platform::Backend,
+    inner:           platform::Backend,
+    control_session: ControlSession,
 }
 
 impl InputBroker {
@@ -136,16 +154,25 @@ impl InputBroker {
     /// `org.freedesktop.portal.RemoteDesktop` (`ConnectToEIS`).  Pass `-1`
     /// on all other platforms; the parameter is ignored.
     ///
+    /// **`control_session`** — a [`ControlSession`] that must hold an active
+    /// [`lowband_messaging::grants::ControlGrant`] for [`inject`](Self::inject)
+    /// calls to reach the OS.  Without a valid grant every inject returns
+    /// [`InjectionError::CapabilityDenied`].
+    ///
     /// Returns `Err(InjectionError::Unavailable)` when the backend cannot
     /// initialise (e.g. libei fd is invalid, CGEventSource allocation failed).
-    pub fn open(ei_fd: i32) -> Result<Self, InjectionError> {
-        Ok(Self { inner: platform::Backend::open(ei_fd)? })
+    pub fn open(ei_fd: i32, control_session: ControlSession) -> Result<Self, InjectionError> {
+        Ok(Self { inner: platform::Backend::open(ei_fd)?, control_session })
     }
 
     /// Inject `event` into the OS input stack.
     ///
-    /// Returns `Ok(())` when the platform backend accepted the event.
+    /// Validates the capability_token via the held [`ControlSession`] before
+    /// dispatching to the platform backend.  Returns
+    /// [`InjectionError::CapabilityDenied`] immediately — without touching the
+    /// OS — if the grant is missing, expired, or has been consent-withdrawn.
     pub fn inject(&self, event: InputEvent) -> Result<(), InjectionError> {
+        self.control_session.apply_event().map_err(InjectionError::CapabilityDenied)?;
         self.inner.inject(event)
     }
 }
@@ -712,6 +739,11 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lowband_messaging::grants::{CapabilityError, ControlSession};
+    #[cfg(target_os = "windows")]
+    use lowband_messaging::grants::{ControlGrant, ConsentRevocationHandle};
+    #[cfg(target_os = "windows")]
+    use std::time::Duration;
 
     #[test]
     fn injection_error_display_is_nonempty() {
@@ -719,9 +751,21 @@ mod tests {
             InjectionError::NotGranted,
             InjectionError::OsRejected,
             InjectionError::Unavailable,
+            InjectionError::CapabilityDenied(CapabilityError::NoActiveGrant),
+            InjectionError::CapabilityDenied(CapabilityError::GrantExpired),
+            InjectionError::CapabilityDenied(CapabilityError::ConsentWithdrawn),
         ] {
             assert!(!err.to_string().is_empty(), "InjectionError::{err:?} has empty Display");
         }
+    }
+
+    #[test]
+    fn injection_error_capability_denied_display_contains_inner_message() {
+        let err = InjectionError::CapabilityDenied(CapabilityError::ConsentWithdrawn);
+        assert!(
+            err.to_string().contains("capability_token"),
+            "CapabilityDenied Display must mention capability_token; got: {err}",
+        );
     }
 
     #[test]
@@ -741,7 +785,7 @@ mod tests {
     #[test]
     fn open_without_grant_returns_err_or_ok() {
         // In CI (Linux, no ei fd) this must fail cleanly — never panic.
-        let result = InputBroker::open(-1);
+        let result = InputBroker::open(-1, ControlSession::new());
         // Either Ok (Windows service account, macOS with TCC already granted)
         // or Err (headless / no libei fd) is correct; panicking is not.
         let _ = result;
@@ -766,10 +810,80 @@ mod tests {
         let _ev = InputEvent::KeyRelease { keycode: 0x1C }; // KEY_ENTER
     }
 
+    // ── Capability-token checks (platform-independent) ────────────────────────
+    //
+    // On Windows the platform backend always opens successfully (SendInput is
+    // always available to the service account).  We use this to exercise the
+    // capability gating layer without needing a real EI fd or TCC grant.
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn inject_with_no_grant_returns_capability_denied() {
+        // Session has no grant — inject must be rejected before OS delivery.
+        let session = ControlSession::new();
+        let broker = InputBroker::open(-1, session).expect("Windows backend must open");
+        let result = broker.inject(InputEvent::KeyPress { keycode: 0x41 });
+        assert_eq!(
+            result,
+            Err(InjectionError::CapabilityDenied(CapabilityError::NoActiveGrant)),
+            "inject without a control grant must return CapabilityDenied(NoActiveGrant)",
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn inject_with_active_grant_reaches_os() {
+        let mut session = ControlSession::new();
+        session.set_grant(Some(ControlGrant::new()));
+        let broker = InputBroker::open(-1, session).expect("Windows backend must open");
+        // The OS call itself may fail (e.g. secure desktop), but the
+        // capability check must have passed — error is OsRejected, not CapabilityDenied.
+        match broker.inject(InputEvent::KeyPress { keycode: 0x41 }) {
+            Ok(()) | Err(InjectionError::OsRejected) => {}
+            Err(e) => panic!("unexpected error with active grant: {e}"),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn inject_with_expired_grant_returns_capability_denied() {
+        let mut session = ControlSession::new();
+        session.set_grant(Some(ControlGrant::with_duration(Duration::ZERO)));
+        let broker = InputBroker::open(-1, session).expect("Windows backend must open");
+        assert_eq!(
+            broker.inject(InputEvent::KeyPress { keycode: 0x41 }),
+            Err(InjectionError::CapabilityDenied(CapabilityError::GrantExpired)),
+            "expired grant must return CapabilityDenied(GrantExpired) before OS delivery",
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn inject_returns_capability_denied_on_consent_withdrawal() {
+        let handle = ConsentRevocationHandle::new();
+        let mut session = ControlSession::new();
+        session.set_grant(Some(ControlGrant::with_consent(handle.clone())));
+        let broker = InputBroker::open(-1, session).expect("Windows backend must open");
+
+        // Grant is live — first inject passes the capability check.
+        match broker.inject(InputEvent::KeyPress { keycode: 0x41 }) {
+            Ok(()) | Err(InjectionError::OsRejected) => {}
+            Err(e) => panic!("unexpected error before withdrawal: {e}"),
+        }
+
+        handle.withdraw();
+
+        assert_eq!(
+            broker.inject(InputEvent::KeyPress { keycode: 0x41 }),
+            Err(InjectionError::CapabilityDenied(CapabilityError::ConsentWithdrawn)),
+            "inject must return CapabilityDenied(ConsentWithdrawn) immediately after withdrawal",
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn open_with_negative_fd_is_unavailable() {
-        match InputBroker::open(-1) {
+        match InputBroker::open(-1, ControlSession::new()) {
             Err(InjectionError::Unavailable) => {}
             other => panic!("expected Unavailable, got {:?}", other.err()),
         }
