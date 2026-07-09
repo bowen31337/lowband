@@ -61,7 +61,7 @@ pub use cpu_ceiling::{CpuCeiling, ThrottleAction};
 pub use cpu_telemetry::CpuTelemetry;
 pub use denoise_prefilter::DenoisePrefilter;
 pub use dred_sender::{
-    dred_depth_from_burst_ms, DredSender,
+    dred_depth_from_burst_ms, dred_depth_from_ge_burst_packets, DredSender,
     DRED_BITS_PER_FRAME, DRED_FRAME_DURATION_MS,
     DRED_OVERHEAD_BPS_PER_FRAME, MAX_DRED_DEPTH_FRAMES, MIN_DRED_DEPTH_FRAMES,
 };

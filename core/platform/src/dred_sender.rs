@@ -132,6 +132,19 @@ impl DredSender {
         self.depth_frames > 0
     }
 
+    /// Update DRED depth from a Gilbert-Elliott burst estimate (Feature 53).
+    ///
+    /// The governor calls this at 10 Hz with the current
+    /// `GilbertElliottEstimator::mean_burst_len()` (in packets) to scale
+    /// redundancy overhead to observed channel conditions.  This eliminates the
+    /// fixed overhead of holding at [`MAX_DRED_DEPTH_FRAMES`] on clean channels
+    /// while keeping full coverage when bursts are long.
+    ///
+    /// Equivalent to `self.set_depth(dred_depth_from_ge_burst_packets(mean_burst_packets))`.
+    pub fn apply_ge_estimate(&mut self, mean_burst_packets: f64) {
+        self.set_depth(dred_depth_from_ge_burst_packets(mean_burst_packets));
+    }
+
     /// Estimated bitrate overhead from DRED at the current depth (bps).
     ///
     /// Computed as `depth_frames × DRED_OVERHEAD_BPS_PER_FRAME`.  This
@@ -141,6 +154,53 @@ impl DredSender {
     pub fn overhead_bps(&self) -> u32 {
         self.depth_frames as u32 * DRED_OVERHEAD_BPS_PER_FRAME
     }
+}
+
+/// DRED depth derived from a Gilbert-Elliott mean burst estimate (Feature 53).
+///
+/// The Gilbert-Elliott estimator reports [`mean_burst_len`] in packets.  At the
+/// 20 ms Opus frame cadence each packet is one frame, so the conversion to ms is:
+///
+/// ```text
+/// burst_ms = mean_burst_packets × DRED_FRAME_DURATION_MS
+/// ```
+///
+/// The result is then passed to [`dred_depth_from_burst_ms`] for ceiling and
+/// clamping, keeping both functions in sync.  Returns [`MIN_DRED_DEPTH_FRAMES`]
+/// when `mean_burst_packets ≤ 0`.
+///
+/// The governor (Feature 53) calls this at every 10 Hz tick with the current
+/// [`GilbertElliottEstimator::mean_burst_len`] so depth tracks actual channel
+/// conditions instead of holding at the worst-case [`MAX_DRED_DEPTH_FRAMES`]
+/// ceiling on clean channels.
+///
+/// [`mean_burst_len`]: lowband_lbtp::fec::GilbertElliottEstimator::mean_burst_len
+/// [`GilbertElliottEstimator::mean_burst_len`]: lowband_lbtp::fec::GilbertElliottEstimator::mean_burst_len
+///
+/// # Examples
+///
+/// ```rust
+/// use lowband_platform::dred_sender::{
+///     dred_depth_from_ge_burst_packets, DRED_FRAME_DURATION_MS, MAX_DRED_DEPTH_FRAMES,
+/// };
+///
+/// // 1-packet burst (20 ms) → 1 frame of depth.
+/// assert_eq!(dred_depth_from_ge_burst_packets(1.0), 1);
+///
+/// // 3-packet burst (60 ms) → 3 frames of depth.
+/// assert_eq!(dred_depth_from_ge_burst_packets(3.0), 3);
+///
+/// // Clean channel (near-zero burst) → disabled (0 frames).
+/// assert_eq!(dred_depth_from_ge_burst_packets(0.0), 0);
+///
+/// // 50-packet burst → full ceiling.
+/// assert_eq!(dred_depth_from_ge_burst_packets(50.0), MAX_DRED_DEPTH_FRAMES);
+///
+/// // Fractions round up: 3.1 → 4 frames.
+/// assert_eq!(dred_depth_from_ge_burst_packets(3.1), 4);
+/// ```
+pub fn dred_depth_from_ge_burst_packets(mean_burst_packets: f64) -> usize {
+    dred_depth_from_burst_ms(mean_burst_packets * DRED_FRAME_DURATION_MS as f64)
 }
 
 /// Minimum DRED depth in frames required to cover a loss burst of `burst_ms`.
@@ -430,6 +490,139 @@ mod tests {
                 s.depth_frames() >= required_depth,
                 "sender depth {} must cover {burst_ms} ms burst (requires {required_depth} frames)",
                 s.depth_frames()
+            );
+        }
+    }
+
+    // ── dred_depth_from_ge_burst_packets ──────────────────────────────────────
+
+    #[test]
+    fn ge_burst_zero_gives_zero_depth() {
+        assert_eq!(dred_depth_from_ge_burst_packets(0.0), 0);
+    }
+
+    #[test]
+    fn ge_burst_negative_gives_zero_depth() {
+        assert_eq!(dred_depth_from_ge_burst_packets(-5.0), 0);
+    }
+
+    #[test]
+    fn ge_burst_one_packet_gives_one_frame() {
+        // 1 packet × 20 ms = 20 ms → ceil(20/20) = 1 frame.
+        assert_eq!(dred_depth_from_ge_burst_packets(1.0), 1);
+    }
+
+    #[test]
+    fn ge_burst_three_packets_gives_three_frames() {
+        // Canonical 3G channel: burst_len = 3 packets → 3 frames.
+        assert_eq!(dred_depth_from_ge_burst_packets(3.0), 3);
+    }
+
+    #[test]
+    fn ge_burst_fractional_rounds_up() {
+        // 3.1 packets × 20 ms = 62 ms → ceil(62/20) = 4 frames.
+        assert_eq!(dred_depth_from_ge_burst_packets(3.1), 4);
+    }
+
+    #[test]
+    fn ge_burst_fifty_packets_hits_ceiling() {
+        assert_eq!(dred_depth_from_ge_burst_packets(50.0), MAX_DRED_DEPTH_FRAMES);
+    }
+
+    #[test]
+    fn ge_burst_above_ceiling_clamps() {
+        assert_eq!(
+            dred_depth_from_ge_burst_packets(200.0),
+            MAX_DRED_DEPTH_FRAMES,
+            "burst exceeding architecture ceiling must clamp to MAX_DRED_DEPTH_FRAMES"
+        );
+    }
+
+    #[test]
+    fn ge_burst_consistent_with_burst_ms_path() {
+        // dred_depth_from_ge_burst_packets(p) must equal
+        // dred_depth_from_burst_ms(p × DRED_FRAME_DURATION_MS).
+        for packets in [0.5_f64, 1.0, 2.0, 3.5, 10.0, 25.0, 50.0, 75.0] {
+            let via_packets = dred_depth_from_ge_burst_packets(packets);
+            let via_ms = dred_depth_from_burst_ms(packets * DRED_FRAME_DURATION_MS as f64);
+            assert_eq!(
+                via_packets, via_ms,
+                "dred_depth_from_ge_burst_packets({packets}) = {via_packets} \
+                 must equal dred_depth_from_burst_ms({:.1}) = {via_ms}",
+                packets * DRED_FRAME_DURATION_MS as f64,
+            );
+        }
+    }
+
+    // ── DredSender::apply_ge_estimate ─────────────────────────────────────────
+
+    #[test]
+    fn apply_ge_estimate_updates_depth() {
+        let mut s = DredSender::new(MAX_DRED_DEPTH_FRAMES);
+        // GE reports a 3-packet mean burst → 3-frame depth.
+        s.apply_ge_estimate(3.0);
+        assert_eq!(s.depth_frames(), 3);
+    }
+
+    #[test]
+    fn apply_ge_estimate_zero_disables_dred() {
+        let mut s = DredSender::new(MAX_DRED_DEPTH_FRAMES);
+        s.apply_ge_estimate(0.0);
+        assert_eq!(s.depth_frames(), 0);
+        assert!(!s.is_active());
+    }
+
+    #[test]
+    fn apply_ge_estimate_reduces_overhead_on_clean_channel() {
+        // A clean channel has mean_burst_len ≈ 1 (isolated losses).
+        // The adapted depth (1 frame) carries far less overhead than the fixed
+        // ceiling of 50 frames.
+        let mut s = DredSender::new(MAX_DRED_DEPTH_FRAMES);
+        let overhead_fixed = s.overhead_bps();
+
+        s.apply_ge_estimate(1.0);
+        let overhead_adapted = s.overhead_bps();
+
+        assert!(
+            overhead_adapted < overhead_fixed,
+            "adapted overhead {overhead_adapted} bps must be less than \
+             fixed-ceiling overhead {overhead_fixed} bps on a clean channel"
+        );
+    }
+
+    #[test]
+    fn apply_ge_estimate_scales_overhead_with_burst() {
+        let mut s = DredSender::new(0);
+
+        // Short burst → lower overhead.
+        s.apply_ge_estimate(5.0);
+        let overhead_short = s.overhead_bps();
+
+        // Long burst → higher overhead.
+        s.apply_ge_estimate(20.0);
+        let overhead_long = s.overhead_bps();
+
+        assert!(
+            overhead_long > overhead_short,
+            "longer GE burst ({} bps) must yield higher DRED overhead than \
+             shorter burst ({} bps)",
+            overhead_long,
+            overhead_short,
+        );
+    }
+
+    #[test]
+    fn apply_ge_estimate_equivalent_to_set_depth_via_ge_fn() {
+        let mut s_method = DredSender::new(0);
+        let mut s_manual = DredSender::new(0);
+
+        for &burst in &[1.0_f64, 3.0, 10.0, 25.5, 50.0] {
+            s_method.apply_ge_estimate(burst);
+            s_manual.set_depth(dred_depth_from_ge_burst_packets(burst));
+            assert_eq!(
+                s_method.depth_frames(),
+                s_manual.depth_frames(),
+                "apply_ge_estimate({burst}) must match set_depth(dred_depth_from_ge_burst_packets({burst}))"
             );
         }
     }
