@@ -91,6 +91,13 @@ impl AppState {
             .flatten()
             .and_then(|v| String::from_utf8(v.to_vec()).ok())
     }
+
+    /// Inserts a session that is already expired. Used only in tests.
+    #[doc(hidden)]
+    pub fn insert_expired_session(&self, code: &str) {
+        let entry = encode_entry(0, 0, &[]);
+        self.session_codes.insert(code.as_bytes(), entry).unwrap();
+    }
 }
 
 fn encode_entry(created_at: i64, expires_at: i64, pubkey: &[u8]) -> Vec<u8> {

@@ -71,6 +71,25 @@ async fn post_session_returns_201_with_9_digit_code() {
 // ── GET /signal/join/{code} ───────────────────────────────────────────────────
 
 #[tokio::test]
+async fn get_join_expired_code_returns_404() {
+    let state = AppState::new();
+    let app = router(state.clone());
+    state.insert_expired_session("111111111");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/signal/join/111111111")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn get_join_happy_path_returns_200_with_peer_descriptor() {
     let app = make_app();
 
@@ -151,6 +170,28 @@ async fn post_offer_bad_code_returns_404() {
                 .uri("/signal/offer")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(json_body(serde_json::json!({ "session_code": "000000000", "sdp": "v=0\r\n" })))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ── POST /signal/offer — expired ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn post_offer_expired_code_returns_404() {
+    let state = AppState::new();
+    let app = router(state.clone());
+    state.insert_expired_session("111111111");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/signal/offer")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(json_body(serde_json::json!({ "session_code": "111111111", "sdp": "v=0\r\n" })))
                 .unwrap(),
         )
         .await
@@ -239,6 +280,72 @@ async fn post_candidate_bad_code_returns_404() {
                 .uri("/signal/candidate")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(json_body(serde_json::json!({ "session_code": "000000000", "candidate": "..." })))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ── POST /signal/answer — expired ────────────────────────────────────────────
+
+#[tokio::test]
+async fn post_answer_expired_code_returns_404() {
+    let state = AppState::new();
+    let app = router(state.clone());
+    state.insert_expired_session("111111111");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/signal/answer")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(json_body(serde_json::json!({ "session_code": "111111111" })))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ── POST /signal/candidate — expired ─────────────────────────────────────────
+
+#[tokio::test]
+async fn post_candidate_expired_code_returns_404() {
+    let state = AppState::new();
+    let app = router(state.clone());
+    state.insert_expired_session("111111111");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/signal/candidate")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(json_body(serde_json::json!({ "session_code": "111111111", "candidate": "..." })))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ── POST /signal/connected — expired ─────────────────────────────────────────
+
+#[tokio::test]
+async fn post_connected_expired_code_returns_404() {
+    let state = AppState::new();
+    let app = router(state.clone());
+    state.insert_expired_session("111111111");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/signal/connected")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(json_body(serde_json::json!({ "session_code": "111111111" })))
                 .unwrap(),
         )
         .await
