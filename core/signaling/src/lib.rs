@@ -35,6 +35,7 @@ pub struct AppState {
     session_codes: sled::Tree,
     ice_candidates: sled::Tree,
     offers: sled::Tree,
+    answers: sled::Tree,
     turn_urls: Arc<Vec<String>>,
     turn_secret: Arc<String>,
 }
@@ -56,6 +57,7 @@ impl AppState {
             session_codes: db.open_tree("session_codes").expect("open tree"),
             ice_candidates: db.open_tree("ice_candidates").expect("open tree"),
             offers: db.open_tree("offers").expect("open tree"),
+            answers: db.open_tree("answers").expect("open tree"),
             turn_urls: Arc::new(vec!["turn:turn.example.com:3478".into()]),
             turn_secret: Arc::new("test-secret".into()),
         }
@@ -68,6 +70,7 @@ impl AppState {
             session_codes: db.open_tree("session_codes")?,
             ice_candidates: db.open_tree("ice_candidates")?,
             offers: db.open_tree("offers")?,
+            answers: db.open_tree("answers")?,
             turn_urls: Arc::new(turn_urls),
             turn_secret: Arc::new(turn_secret),
         })
@@ -86,6 +89,15 @@ impl AppState {
     /// Returns the pending SDP offer for `session_code`, if one has been posted.
     pub fn pending_offer(&self, session_code: &str) -> Option<String> {
         self.offers
+            .get(session_code.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|v| String::from_utf8(v.to_vec()).ok())
+    }
+
+    /// Returns the pending SDP answer for `session_code`, if one has been posted.
+    pub fn pending_answer(&self, session_code: &str) -> Option<String> {
+        self.answers
             .get(session_code.as_bytes())
             .ok()
             .flatten()
@@ -195,6 +207,12 @@ struct OfferBody {
 }
 
 #[derive(Deserialize)]
+struct AnswerBody {
+    session_code: String,
+    sdp: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct CandidateBody {
     session_code: String,
     candidate: String,
@@ -213,9 +231,14 @@ async fn post_offer(
 
 async fn post_answer(
     State(st): State<AppState>,
-    Json(b): Json<CodedBody>,
+    Json(b): Json<AnswerBody>,
 ) -> Result<StatusCode, StatusCode> {
     check_code(&st, &b.session_code)?;
+    if let Some(sdp) = b.sdp {
+        st.answers
+            .insert(b.session_code.as_bytes(), sdp.as_bytes())
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
     Ok(StatusCode::OK)
 }
 
