@@ -2,6 +2,7 @@
 //!
 //! | Feature | Description |
 //! |---------|-------------|
+//! | 58  | Opus LACE: enables LACE decoder enhancement when cpu_headroom is available |
 //! | 128 | Denoise pre-filter: cleans sensor noise with denoise_prefilter before encode |
 //! | 155 | Privilege escalation: per-platform elevation documented, explicit, never silent |
 //! | 160 | CPU ceiling: caps a constrained-tier session to 35% on a 2015-class laptop |
@@ -32,6 +33,7 @@ pub mod cpu_ceiling;
 pub mod cpu_telemetry;
 pub mod denoise_prefilter;
 pub mod elevation;
+pub mod opus_decoder;
 pub mod fallback_detector;
 pub mod gear_policy;
 pub mod input_injection;
@@ -86,6 +88,9 @@ pub use synthesis_network::{
     ExpressionLatents, HeadPose, HeadResolution, Keypoint3D, MotionLatents,
     ReconstructedFrame, ReferenceFrame, SynthesisConfig, SynthesisError, SynthesisNetwork,
     HEAD_PX_MAX, HEAD_PX_MIN, KEYPOINT_COUNT,
+};
+pub use opus_decoder::{
+    lace_mode_from_cpu_pct, LaceMode, LACE_CPU_OVERHEAD_PCT, LACE_HEADROOM_THRESHOLD_PCT,
 };
 pub use thermal::{ThermalMonitor, ThermalPressure};
 pub use tier::TierState;
