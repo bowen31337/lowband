@@ -4,6 +4,7 @@
 //! |---------|-------------|
 //! | 33  | User can export the audit_log, which saves to a tamper-evident json file |
 //! | 139 | UI shows a TCP-443 relay warning with an honest latency penalty label |
+//! | 141 | UI displays one obvious consent screen before any capability is granted |
 //! | 142 | UI shows a persistent indicator whenever a capability is live on the assisted machine |
 //! | 143 | User can grant view access with view_grant but withhold control on the consent screen |
 //! | 145 | UI displays a panic control that severs injection on both sides |

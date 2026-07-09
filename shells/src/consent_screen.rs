@@ -178,6 +178,31 @@ impl ConsentScreen {
     pub fn state(&self) -> ConsentScreenState {
         self.state
     }
+
+    /// Return the capability grant choice made by the user, if the consent
+    /// screen was shown and the user confirmed — Feature 141.
+    ///
+    /// Returns `Some(choice)` only when [`on_consent_request`] has been
+    /// called (screen shown) and the user subsequently called [`grant`]
+    /// (screen confirmed).  Returns `None` in every other state: before
+    /// the screen is shown, while the screen awaits the user's decision,
+    /// after the user denied access, and after [`reset`].
+    ///
+    /// The daemon **must** query this before issuing any capability token.
+    /// A `None` result means no token may be issued — the consent screen
+    /// is either not yet shown, still pending, or was denied.  This
+    /// enforces the invariant that no capability is granted before Ana sees
+    /// and confirms the one obvious consent dialog.
+    ///
+    /// [`on_consent_request`]: Self::on_consent_request
+    /// [`grant`]: Self::grant
+    /// [`reset`]: Self::reset
+    pub fn pending_grant(&self) -> Option<GrantChoice> {
+        match self.state {
+            ConsentScreenState::Granted(choice) => Some(choice),
+            _ => None,
+        }
+    }
 }
 
 impl Default for ConsentScreen {
@@ -432,6 +457,115 @@ mod tests {
         assert_eq!(
             ConsentScreen::new().state(),
             ConsentScreen::default().state(),
+        );
+    }
+
+    // ── Feature 141: one obvious consent screen before any capability ──────────
+    //
+    // The invariant: pending_grant() must return None until the consent screen
+    // has been shown (on_consent_request) AND the user has confirmed a grant
+    // choice (grant(choice)).  The daemon uses pending_grant() as the sole gate
+    // before issuing capability tokens.
+
+    #[test]
+    fn no_grant_available_before_consent_screen_shown() {
+        let screen = ConsentScreen::new();
+        assert_eq!(
+            screen.pending_grant(),
+            None,
+            "no capability grant must be available before the consent screen is shown",
+        );
+    }
+
+    #[test]
+    fn no_grant_available_while_consent_screen_is_pending() {
+        let mut screen = ConsentScreen::new();
+        screen.on_consent_request();
+        assert_eq!(
+            screen.pending_grant(),
+            None,
+            "no capability grant must be available while the consent screen awaits the user",
+        );
+    }
+
+    #[test]
+    fn no_grant_available_after_denial() {
+        let mut screen = ConsentScreen::new();
+        screen.on_consent_request();
+        screen.deny();
+        assert_eq!(
+            screen.pending_grant(),
+            None,
+            "no capability grant must be available after the user denied access",
+        );
+    }
+
+    #[test]
+    fn grant_available_after_view_only_confirmed_on_consent_screen() {
+        let mut screen = ConsentScreen::new();
+        screen.on_consent_request(); // screen shown
+        screen.grant(GrantChoice::ViewOnly);
+        assert_eq!(
+            screen.pending_grant(),
+            Some(GrantChoice::ViewOnly),
+            "view-only grant must be available after user confirms ViewOnly on the one consent screen",
+        );
+    }
+
+    #[test]
+    fn grant_available_after_view_and_control_confirmed_on_consent_screen() {
+        let mut screen = ConsentScreen::new();
+        screen.on_consent_request(); // screen shown
+        screen.grant(GrantChoice::ViewAndControl);
+        assert_eq!(
+            screen.pending_grant(),
+            Some(GrantChoice::ViewAndControl),
+            "view+control grant must be available after user confirms on the one consent screen",
+        );
+    }
+
+    #[test]
+    fn no_grant_available_after_reset() {
+        let mut screen = ConsentScreen::new();
+        screen.on_consent_request();
+        screen.grant(GrantChoice::ViewOnly);
+        screen.reset();
+        assert_eq!(
+            screen.pending_grant(),
+            None,
+            "no grant must be available after reset — next session starts clean",
+        );
+    }
+
+    #[test]
+    fn consent_screen_shown_exactly_once_per_request_cycle() {
+        // A duplicate on_consent_request while PendingRequest is a no-op,
+        // enforcing that exactly one obvious screen is shown, not stacked dialogs.
+        let mut screen = ConsentScreen::new();
+        screen.on_consent_request(); // first request — screen shown
+        screen.on_consent_request(); // duplicate — no-op: one screen, not two
+        assert_eq!(
+            screen.state(),
+            ConsentScreenState::PendingRequest,
+            "duplicate consent request must not stack screens — one obvious screen per cycle",
+        );
+        assert_eq!(
+            screen.pending_grant(),
+            None,
+            "pending_grant must remain None until the user makes a choice",
+        );
+    }
+
+    #[test]
+    fn capability_grant_requires_consent_screen_as_prerequisite() {
+        // Direct grant() without a prior consent request leaves state Idle
+        // so pending_grant() stays None — the daemon has no capability to issue.
+        let mut screen = ConsentScreen::new();
+        screen.grant(GrantChoice::ViewAndControl); // no-op: screen was never shown
+        assert_eq!(
+            screen.pending_grant(),
+            None,
+            "grant bypassed without consent screen showing must not produce a pending grant",
         );
     }
 }
