@@ -3,6 +3,7 @@
 //! | Feature | Description |
 //! |---------|-------------|
 //! | 33  | User can export the audit_log, which saves to a tamper-evident json file |
+//! | 66  | System displays a technician pointer_overlay on the cursor channel in view-only mode |
 //! | 139 | UI shows a TCP-443 relay warning with an honest latency penalty label |
 //! | 140 | User can join a session with session_code entry and no account |
 //! | 141 | UI displays one obvious consent screen before any capability is granted |
@@ -22,6 +23,7 @@ pub mod consent_screen;
 pub mod gear_badge;
 pub mod join_screen;
 pub mod panic_control;
+pub mod pointer_overlay;
 pub mod quality_bar;
 pub mod relay_warning;
 pub mod revocation_control;
@@ -29,6 +31,10 @@ pub mod session_summary;
 pub mod ui_shell;
 
 pub use audit_export::{AuditExportError, AuditExporter};
+pub use pointer_overlay::{
+    PointerOverlay, PointerOverlayState,
+    OVERLAY_COLOR, OVERLAY_LABEL,
+};
 pub use capability_indicator::{
     CapabilityIndicator, CapabilityIndicatorState,
     INDICATOR_COLOR, INDICATOR_LABEL,
