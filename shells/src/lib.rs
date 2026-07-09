@@ -4,6 +4,7 @@
 //! |---------|-------------|
 //! | 33  | User can export the audit_log, which saves to a tamper-evident json file |
 //! | 139 | UI shows a TCP-443 relay warning with an honest latency penalty label |
+//! | 143 | User can grant view access with view_grant but withhold control on the consent screen |
 //! | 145 | UI displays a panic control that severs injection on both sides |
 //! | 146 | UI shows the current tier, bitrate, RTT, and loss in an honest quality bar |
 //! | 147 | UI displays an AI-reconstructed badge while any neural gear is live |
@@ -13,6 +14,7 @@
 //! | 152 | User can revoke session access with capability_token removal in a single click |
 
 pub mod audit_export;
+pub mod consent_screen;
 pub mod gear_badge;
 pub mod join_screen;
 pub mod panic_control;
@@ -23,6 +25,12 @@ pub mod session_summary;
 pub mod ui_shell;
 
 pub use audit_export::{AuditExportError, AuditExporter};
+pub use consent_screen::{
+    ConsentScreen, ConsentScreenState, GrantChoice,
+    CONSENT_SCREEN_TITLE,
+    GRANT_VIEW_ONLY_LABEL, GRANT_VIEW_AND_CONTROL_LABEL,
+    DENY_LABEL,
+};
 pub use gear_badge::{BadgeState, GearBadge, BADGE_COLOR, BADGE_LABEL};
 pub use join_screen::{CodeError, ConnectError, JoinScreen, JoinState};
 pub use panic_control::{
