@@ -64,6 +64,7 @@ pub mod noise_suppressor;
 pub mod opus_packetizer;
 pub mod reference_frame_sender;
 pub mod screen_capture;
+pub mod screen_encoder;
 pub mod synthesis_network;
 pub mod temporal_svc;
 pub mod thermal;
@@ -110,6 +111,11 @@ pub use mic_capture::{
     MIC_CHANNELS, MIC_FRAME_MS, MIC_FRAME_SAMPLES, MIC_SAMPLE_RATE,
 };
 pub use screen_capture::{CaptureError, CaptureFrame, CursorShape, DirtyRect, ScreenCaptureBroker};
+pub use screen_encoder::{
+    classify_tile, RefinementQueue, TileClass, TileCoord,
+    LOSSLESS_BYTES_PER_PICTURE_TILE, PALETTE_COLOR_LIMIT, PIXEL_EXACT_DEADLINE_MS,
+    TILE_BYTES, TILE_SIZE_PX, VIDEO_COLOR_LIMIT,
+};
 pub use gear_policy::{
     allocate, gear_b_preset_from_cpu_pct, select_resolution, Av1EncodeCapability, CameraGear,
     DisplayResolution, GearConstraints, StreamBudgets, AUDIO_FLOOR_BPS,
