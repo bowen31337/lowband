@@ -2,6 +2,7 @@
 //!
 //! | Feature | Description |
 //! |---------|-------------|
+//! | 47  | AGC: applies automatic gain control ahead of detection with voice_activity gating |
 //! | 51  | LBRR FEC: recovers isolated audio losses in-band with lbrr_fec redundancy |
 //! | 52  | DRED sender: sends Opus 1.5 DRED neural redundancy to reconstruct multi-hundred-millisecond loss_bursts |
 //! | 54  | DTX: silence costs near-zero bitrate with comfort_noise updates |
@@ -34,6 +35,7 @@
 //! [`gear_policy::AUDIO_FLOOR_BPS`] (6 kbps) at every thermal level and at
 //! every network bandwidth.
 
+pub mod agc;
 pub mod cpu_ceiling;
 pub mod cpu_telemetry;
 pub mod denoise_prefilter;
@@ -63,6 +65,12 @@ pub mod thermal;
 pub mod tier;
 pub mod uac;
 
+pub use agc::{
+    AgcProcessor, AgcStats,
+    AGC_ENVELOPE_ATTACK, AGC_ENVELOPE_FLOOR, AGC_ENVELOPE_RELEASE,
+    AGC_GAIN_DECREASE_COEFF, AGC_GAIN_INCREASE_COEFF,
+    AGC_MAX_GAIN, AGC_MIN_GAIN, AGC_TARGET_RMS,
+};
 pub use cpu_ceiling::{CpuCeiling, ThrottleAction};
 pub use cpu_telemetry::CpuTelemetry;
 pub use denoise_prefilter::DenoisePrefilter;
