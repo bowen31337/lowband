@@ -32,6 +32,7 @@ pub mod denoise_prefilter;
 pub mod elevation;
 pub mod gear_policy;
 pub mod input_injection;
+pub mod intra_refresh;
 #[cfg(feature = "ipc")]
 pub mod ipc;
 pub mod screen_capture;
@@ -45,6 +46,7 @@ pub use elevation::{ElevationKind, ElevationOutcome, ElevationRequest, Escalatio
 #[cfg(target_os = "windows")]
 pub use elevation::WinElevationBridge;
 pub use input_injection::{InputBroker, InputEvent, InjectionError, MouseButton};
+pub use intra_refresh::{IntraRefreshFrame, IntraRefreshState};
 pub use screen_capture::{CaptureError, CaptureFrame, DirtyRect, ScreenCaptureBroker};
 pub use gear_policy::{
     allocate, select_resolution, Av1EncodeCapability, CameraGear, DisplayResolution,
