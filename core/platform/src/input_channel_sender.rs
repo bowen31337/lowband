@@ -1,5 +1,5 @@
 //! Input event encoder/decoder for the reliable-ordered input channel —
-//! Features 59 and 61.
+//! Features 59, 60, and 61.
 //!
 //! # Feature 59 — varint delta coding
 //!
@@ -67,6 +67,15 @@
 //! ```
 
 use crate::input_injection::{InputEvent, MouseButton};
+
+// ── Mouse-move coalescing cadence (Feature 60) ───────────────────────────────
+
+/// Nanosecond interval for coalescing mouse-move events to the display
+/// refresh cadence.
+///
+/// Matches `CURSOR_TICK_NS` from `cursor_sender` (1 000 000 000 / 60 ≈ 16.67 ms).
+/// The session loop calls [`MouseMoveCoalescer::flush`] once per this interval.
+pub const MOUSE_COALESCE_TICK_NS: u64 = 1_000_000_000 / 60;
 
 // ── Channel constants ─────────────────────────────────────────────────────────
 
@@ -310,6 +319,100 @@ impl InputChannelDecoder {
             }
             _ => None,
         }
+    }
+}
+
+// ── MouseMoveCoalescer (Feature 60) ──────────────────────────────────────────
+
+/// Coalesces mouse-move events to the remote display refresh cadence (60 Hz).
+///
+/// High-precision pointer devices generate 200–1 000 `MouseMove` events per
+/// second, but the remote display refreshes at only 60 Hz.  Sending every
+/// individual event wastes bandwidth and adds LBTP framing overhead with no
+/// perceptible benefit.
+///
+/// `MouseMoveCoalescer` accumulates all `(dx, dy)` deltas that arrive within
+/// one display tick and emits exactly one coalesced [`InputEvent::MouseMove`]
+/// frame when [`flush`](Self::flush) is called.  Sub-pixel remainders are
+/// carried forward so the remote cursor converges to the correct pixel even at
+/// very slow pointer speeds.
+///
+/// # Usage
+///
+/// ```
+/// use lowband_platform::input_channel_sender::{
+///     InputChannelSender, MouseMoveCoalescer,
+/// };
+///
+/// let mut coalescer = MouseMoveCoalescer::new();
+/// let mut sender    = InputChannelSender::new();
+///
+/// // OS events at 500 Hz — accumulate each one.
+/// coalescer.accumulate(2.0, -1.0);
+/// coalescer.accumulate(3.0,  1.5);
+/// coalescer.accumulate(1.0, -0.5);
+///
+/// // Once per 60 Hz display tick, flush one coalesced frame.
+/// let frame = coalescer.flush(&mut sender);
+/// assert!(frame.is_some()); // moves were accumulated
+///
+/// // A flush with no new moves returns None.
+/// let empty = coalescer.flush(&mut sender);
+/// assert!(empty.is_none());
+/// ```
+#[derive(Debug, Default)]
+pub struct MouseMoveCoalescer {
+    /// Accumulated fractional dx since the last flush (includes sub-pixel carry).
+    pending_dx: f64,
+    /// Accumulated fractional dy since the last flush (includes sub-pixel carry).
+    pending_dy: f64,
+    /// True when at least one `accumulate` call has been made since the last flush.
+    has_pending: bool,
+}
+
+impl MouseMoveCoalescer {
+    /// Create a new coalescer with no pending movement.
+    pub fn new() -> Self {
+        Self { pending_dx: 0.0, pending_dy: 0.0, has_pending: false }
+    }
+
+    /// Accumulate a mouse-move delta into the current coalescing window.
+    ///
+    /// Call this for every `MouseMove` OS event regardless of arrival rate.
+    /// Deltas are summed in `f64` to preserve sub-pixel precision until
+    /// [`flush`](Self::flush) rounds and transmits the net displacement.
+    pub fn accumulate(&mut self, dx: f64, dy: f64) {
+        self.pending_dx += dx;
+        self.pending_dy += dy;
+        self.has_pending = true;
+    }
+
+    /// Emit one coalesced [`InputEvent::MouseMove`] frame for this display tick.
+    ///
+    /// Returns `None` when no moves were accumulated since the last call — the
+    /// caller must not transmit a frame in that case.  The 60 Hz cursor-position
+    /// heartbeat on LBTP channel 2 already signals "cursor is stationary"
+    /// independently of the input event channel.
+    ///
+    /// The integer `(dx, dy)` written to the wire are `round(pending_dx)` and
+    /// `round(pending_dy)`.  The sub-pixel remainder is carried forward so the
+    /// remote cursor position converges correctly even at slow pointer speeds.
+    ///
+    /// # Returns
+    ///
+    /// `Some(bytes)` ready to hand to the LBTP pacer on [`INPUT_CHANNEL_ID`],
+    /// or `None` if the coalescing window was empty.
+    pub fn flush(&mut self, sender: &mut InputChannelSender) -> Option<Vec<u8>> {
+        if !self.has_pending {
+            return None;
+        }
+        let int_dx = self.pending_dx.round();
+        let int_dy = self.pending_dy.round();
+        // Carry the sub-pixel remainder into the next tick.
+        self.pending_dx -= int_dx;
+        self.pending_dy -= int_dy;
+        self.has_pending = false;
+        sender.encode(InputEvent::MouseMove { dx: int_dx, dy: int_dy })
     }
 }
 
@@ -706,5 +809,109 @@ mod tests {
     fn max_input_frame_bytes_matches_lbtp_mtu_formula() {
         // 1 200 − 19 (AEAD envelope) − 2 (frame header) = 1 179
         assert_eq!(MAX_INPUT_FRAME_BYTES, 1_200 - 19 - 2);
+    }
+
+    // ── MouseMoveCoalescer (Feature 60) ──────────────────────────────────────
+
+    #[test]
+    fn coalesce_tick_ns_is_sixty_hz() {
+        assert_eq!(MOUSE_COALESCE_TICK_NS, 1_000_000_000 / 60);
+    }
+
+    #[test]
+    fn flush_with_no_accumulation_returns_none() {
+        let mut coalescer = MouseMoveCoalescer::new();
+        let mut sender    = InputChannelSender::new();
+        assert!(coalescer.flush(&mut sender).is_none());
+    }
+
+    #[test]
+    fn flush_after_second_empty_window_returns_none() {
+        let mut coalescer = MouseMoveCoalescer::new();
+        let mut sender    = InputChannelSender::new();
+        coalescer.accumulate(5.0, 3.0);
+        coalescer.flush(&mut sender).unwrap(); // first tick — consumes
+        assert!(coalescer.flush(&mut sender).is_none()); // second tick — empty
+    }
+
+    #[test]
+    fn single_accumulate_then_flush_produces_frame() {
+        let mut coalescer = MouseMoveCoalescer::new();
+        let mut sender    = InputChannelSender::new();
+        coalescer.accumulate(10.0, -5.0);
+        let frame = coalescer.flush(&mut sender).unwrap();
+        assert_eq!(frame[0], DISC_MOUSE_MOVE);
+
+        let mut decoder = InputChannelDecoder::new();
+        let ev = decoder.decode(&frame).unwrap();
+        assert!(matches!(ev, InputEvent::MouseMove { dx, dy } if dx == 10.0 && dy == -5.0));
+    }
+
+    #[test]
+    fn multiple_accumulations_sum_into_one_frame() {
+        let mut coalescer = MouseMoveCoalescer::new();
+        let mut sender    = InputChannelSender::new();
+        coalescer.accumulate(3.0, 1.0);
+        coalescer.accumulate(4.0, 2.0);
+        coalescer.accumulate(1.0, -6.0);
+        let frame = coalescer.flush(&mut sender).unwrap();
+
+        let mut decoder = InputChannelDecoder::new();
+        let ev = decoder.decode(&frame).unwrap();
+        assert!(matches!(ev, InputEvent::MouseMove { dx, dy } if dx == 8.0 && dy == -3.0));
+    }
+
+    #[test]
+    fn sub_pixel_remainder_carries_forward() {
+        let mut coalescer = MouseMoveCoalescer::new();
+        let mut sender    = InputChannelSender::new();
+
+        // 0.4 rounds to 0 — remainder 0.4 carries forward.
+        coalescer.accumulate(0.4, 0.0);
+        let frame1 = coalescer.flush(&mut sender).unwrap(); // has_pending=true, emits 0
+        let mut decoder = InputChannelDecoder::new();
+        let ev1 = decoder.decode(&frame1).unwrap();
+        assert!(matches!(ev1, InputEvent::MouseMove { dx, dy } if dx == 0.0 && dy == 0.0));
+
+        // Next tick: 0.4 carry + 0.4 new = 0.8, rounds to 1.
+        coalescer.accumulate(0.4, 0.0);
+        let frame2 = coalescer.flush(&mut sender).unwrap();
+        let mut decoder2 = InputChannelDecoder::new();
+        let ev2 = decoder2.decode(&frame2).unwrap();
+        assert!(matches!(ev2, InputEvent::MouseMove { dx, dy } if dx == 1.0 && dy == 0.0));
+    }
+
+    #[test]
+    fn coalescer_default_matches_new() {
+        let mut a = MouseMoveCoalescer::new();
+        let mut b = MouseMoveCoalescer::default();
+        let mut sender_a = InputChannelSender::new();
+        let mut sender_b = InputChannelSender::new();
+        a.accumulate(5.0, 5.0);
+        b.accumulate(5.0, 5.0);
+        assert_eq!(a.flush(&mut sender_a), b.flush(&mut sender_b));
+    }
+
+    #[test]
+    fn coalesced_frame_has_mouse_move_discriminant() {
+        let mut coalescer = MouseMoveCoalescer::new();
+        let mut sender    = InputChannelSender::new();
+        coalescer.accumulate(1.0, 1.0);
+        let frame = coalescer.flush(&mut sender).unwrap();
+        assert_eq!(frame[0], DISC_MOUSE_MOVE, "coalesced frame must carry MouseMove discriminant");
+    }
+
+    #[test]
+    fn five_hundred_hz_burst_produces_one_frame_per_tick() {
+        // Simulate 500 Hz pointer for one 60 Hz tick ≈ 8 events, then flush once.
+        let events_per_tick = (500.0_f64 / 60.0).ceil() as usize; // ≈ 9
+        let mut coalescer = MouseMoveCoalescer::new();
+        let mut sender    = InputChannelSender::new();
+        for _ in 0..events_per_tick {
+            coalescer.accumulate(2.0, 1.0);
+        }
+        let frame = coalescer.flush(&mut sender);
+        assert!(frame.is_some(), "must emit exactly one frame for the full tick");
+        assert!(coalescer.flush(&mut sender).is_none(), "no second frame after flush");
     }
 }

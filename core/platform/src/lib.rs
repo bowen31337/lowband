@@ -105,8 +105,8 @@ pub use elevation::WinElevationBridge;
 pub use input_channel_sender::{
     decode_varint_i32 as input_decode_varint,
     encode_varint_i32 as input_encode_varint,
-    InputChannelDecoder, InputChannelSender,
-    INPUT_CHANNEL_ID, MAX_INPUT_FRAME_BYTES, SCHEDULING_PRIORITY_RANK,
+    InputChannelDecoder, InputChannelSender, MouseMoveCoalescer,
+    INPUT_CHANNEL_ID, MAX_INPUT_FRAME_BYTES, MOUSE_COALESCE_TICK_NS, SCHEDULING_PRIORITY_RANK,
 };
 pub use input_injection::{InputBroker, InputEvent, InjectionError, MouseButton};
 pub use input_latency_budget::{
