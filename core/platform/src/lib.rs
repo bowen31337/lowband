@@ -2,6 +2,7 @@
 //!
 //! | Feature | Description |
 //! |---------|-------------|
+//! | 46  | Noise suppressor: RNNoise-class neural filtering with noise_suppression at ~0.1% CPU |
 //! | 47  | AGC: applies automatic gain control ahead of detection with voice_activity gating |
 //! | 51  | LBRR FEC: recovers isolated audio losses in-band with lbrr_fec redundancy |
 //! | 52  | DRED sender: sends Opus 1.5 DRED neural redundancy to reconstruct multi-hundred-millisecond loss_bursts |
@@ -56,6 +57,7 @@ pub mod ipc;
 pub mod keypoint_extractor;
 pub mod motion_encoder;
 pub mod neural_vocoder;
+pub mod noise_suppressor;
 pub mod opus_packetizer;
 pub mod reference_frame_sender;
 pub mod screen_capture;
@@ -124,6 +126,12 @@ pub use jitter_buffer::{
 };
 pub use lbrr_fec::{
     LbrrDecoder, LbrrEncoder, LBRR_ENABLE_THRESHOLD, LBRR_FRAME_DURATION_MS, LBRR_OVERHEAD_BPS,
+};
+pub use noise_suppressor::{
+    NoiseSuppressor, NsStats,
+    NS_ENERGY_FLOOR, NS_FLOOR_ATTACK, NS_FLOOR_MAX_SNR, NS_FLOOR_RELEASE,
+    NS_FRAME_MS, NS_FRAME_SAMPLES, NS_SAMPLE_RATE,
+    NS_VAD_SMOOTH, NS_VAD_THRESHOLD,
 };
 pub use neural_vocoder::{
     audio_gear_from_tier_and_npu, AudioGear, NpuCapability,
