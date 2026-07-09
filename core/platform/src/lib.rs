@@ -39,6 +39,7 @@ pub mod intra_refresh;
 #[cfg(feature = "ipc")]
 pub mod ipc;
 pub mod keypoint_extractor;
+pub mod motion_encoder;
 pub mod screen_capture;
 pub mod synthesis_network;
 pub mod temporal_svc;
@@ -71,6 +72,10 @@ pub use gear_policy::{
 pub use keypoint_extractor::{
     CameraFrame, ExtractionError, ExtractionResult, KeypointExtractor, KeypointExtractorConfig,
     EXPRESSION_DIM,
+};
+pub use motion_encoder::{
+    MotionCodecError, MotionDecoder, MotionEncoder, MOTION_BITRATE_HI_BPS,
+    MOTION_BITRATE_LO_BPS, MOTION_TARGET_FPS,
 };
 pub use synthesis_network::{
     ExpressionLatents, HeadPose, HeadResolution, Keypoint3D, MotionLatents,
