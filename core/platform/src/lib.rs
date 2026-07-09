@@ -134,6 +134,7 @@ pub use screen_encoder::{
     TILE_BYTES, TILE_SIZE_PX, VIDEO_COLOR_LIMIT,
     BlitCommand, BlitResult, ScrollDetector,
     SCROLL_CONFIDENCE_THRESHOLD, SCROLL_MAX_SMALL_SHIFT, SCROLL_MIN_REGION_PX,
+    merge_damage_rects, DAMAGE_MERGE_RATIO,
 };
 pub use gear_policy::{
     allocate, gear_b_preset_from_cpu_pct, select_resolution, Av1EncodeCapability, CameraGear,

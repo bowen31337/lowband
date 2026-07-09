@@ -616,6 +616,93 @@ impl Default for VideoSubStream {
     }
 }
 
+// ── merge_damage_rects ────────────────────────────────────────────────────────
+
+/// Merge ratio threshold below which two damage rectangles are coalesced
+/// into their bounding box (Feature 88).
+///
+/// The merge ratio for a pair of rectangles is:
+///
+/// ```text
+/// merge_ratio = bounding_box_area / (area_a + area_b)
+/// ```
+///
+/// When `merge_ratio < DAMAGE_MERGE_RATIO` the two rects are replaced by
+/// their bounding box.  A ratio of 1.0 means the rects are identical or
+/// one contains the other (zero wasted area); a ratio just below 1.3 means
+/// the bounding box is at most 30 % larger than the union of inputs.
+pub const DAMAGE_MERGE_RATIO: f32 = 1.3;
+
+/// Coalesce damage rectangles when their merge ratio is below
+/// [`DAMAGE_MERGE_RATIO`] (Feature 88).
+///
+/// The algorithm iterates over all pairs and merges the first pair whose
+/// ratio is below the threshold, replacing the two rects with their bounding
+/// box.  This repeats until no further merges are possible.
+///
+/// Zero-area rectangles (`width == 0` or `height == 0`) are discarded before
+/// merging begins.
+///
+/// # Complexity
+///
+/// O(n² · k) where n is the input count and k is the number of merge passes.
+/// For typical screen damage (< 20 rects per frame) this is negligible.
+pub fn merge_damage_rects(
+    rects: Vec<crate::screen_capture::DirtyRect>,
+) -> Vec<crate::screen_capture::DirtyRect> {
+    use crate::screen_capture::DirtyRect;
+
+    let mut current: Vec<DirtyRect> = rects
+        .into_iter()
+        .filter(|r| r.width > 0 && r.height > 0)
+        .collect();
+
+    loop {
+        let mut merged_any = false;
+        let mut i = 0;
+
+        'outer: while i < current.len() {
+            let mut j = i + 1;
+            while j < current.len() {
+                let a = current[i];
+                let b = current[j];
+
+                let x0 = a.x.min(b.x);
+                let y0 = a.y.min(b.y);
+                let x1 = (a.x + a.width  as i32).max(b.x + b.width  as i32);
+                let y1 = (a.y + a.height as i32).max(b.y + b.height as i32);
+
+                let bbox_area = (x1 - x0) as u64 * (y1 - y0) as u64;
+                let sum_area  = a.width  as u64 * a.height as u64
+                              + b.width  as u64 * b.height as u64;
+
+                // merge_ratio < 1.3  ⟺  bbox_area × 10 < sum_area × 13
+                if bbox_area * 10 < sum_area * 13 {
+                    current[i] = DirtyRect {
+                        x:      x0,
+                        y:      y0,
+                        width:  (x1 - x0) as u32,
+                        height: (y1 - y0) as u32,
+                    };
+                    current.swap_remove(j);
+                    merged_any = true;
+                    // Re-scan current[i] against its new neighbours.
+                    continue 'outer;
+                }
+
+                j += 1;
+            }
+            i += 1;
+        }
+
+        if !merged_any {
+            break;
+        }
+    }
+
+    current
+}
+
 // ── BlitCommand ───────────────────────────────────────────────────────────────
 
 /// 16-byte wire command emitted when a scroll is detected (Feature 90).
