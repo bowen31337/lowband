@@ -786,33 +786,54 @@ mod platform {
     use std::sync::{Arc, Condvar, Mutex};
 
     // ScreenCaptureKit / CoreGraphics types (opaque handles).
-    // We call SCStreamCreate, SCStreamStart, etc. via the Objective-C runtime
-    // to avoid requiring the full objc2 crate; pointers are treated as opaque.
-    //
-    // SCStreamOutput delegate is implemented as a C callback shim registered
-    // through objc_msgSend / class_addMethod — described inline below.
+    // We drive SCStream via the Objective-C runtime to avoid requiring the
+    // full objc2 crate.  SCStreamOutput is implemented as a C callback shim
+    // registered through objc_allocateClassPair / class_addMethod at runtime.
 
     #[link(name = "ScreenCaptureKit", kind = "framework")]
     #[link(name = "CoreGraphics",     kind = "framework")]
     #[link(name = "CoreMedia",        kind = "framework")]
     #[link(name = "CoreVideo",        kind = "framework")]
+    #[link(name = "CoreFoundation",   kind = "framework")]
     extern "C" {
-        // CGRequestScreenCaptureAccess() → bool (1 = granted)
         fn CGRequestScreenCaptureAccess() -> bool;
-        // SCShareableContent / SCStream bootstrapping via ObjC runtime.
         fn objc_getClass(name: *const u8) -> *mut c_void;
         fn sel_registerName(name: *const u8) -> *mut c_void;
-        // id objc_msgSend(id self, SEL op, ...) — varargs, use typed wrappers below.
         fn objc_msgSend(receiver: *mut c_void, sel: *mut c_void, ...) -> *mut c_void;
-        // CoreVideo pixel buffer access.
+        // ObjC runtime — delegate class registration.
+        fn objc_allocateClassPair(superclass: *mut c_void, name: *const u8, extra: usize) -> *mut c_void;
+        fn class_addMethod(cls: *mut c_void, sel: *mut c_void, imp: *mut c_void, types: *const u8) -> bool;
+        fn objc_registerClassPair(cls: *mut c_void);
+        fn objc_setAssociatedObject(obj: *mut c_void, key: *const c_void, value: *mut c_void, policy: usize);
+        fn objc_getAssociatedObject(obj: *const c_void, key: *const c_void) -> *mut c_void;
+        // CMSampleBuffer — frame info for dirty rects.
+        fn CMSampleBufferGetImageBuffer(buf: *mut c_void) -> *mut c_void;
+        fn CMSampleBufferGetSampleAttachmentsArray(buf: *mut c_void, create_if_necessary: bool) -> *mut c_void;
+        // CoreFoundation — toll-free bridged with NSArray / NSDictionary / NSNumber.
+        fn CFArrayGetCount(arr: *const c_void) -> isize;
+        fn CFArrayGetValueAtIndex(arr: *const c_void, idx: isize) -> *const c_void;
+        fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
+        fn CFStringCreateWithCString(alloc: *const c_void, cstr: *const u8, encoding: u32) -> *mut c_void;
+        fn CFNumberGetValue(num: *const c_void, the_type: u32, value_ptr: *mut c_void) -> bool;
         fn CVPixelBufferGetWidth(buf: *mut c_void)  -> usize;
         fn CVPixelBufferGetHeight(buf: *mut c_void) -> usize;
         fn CVPixelBufferGetBytesPerRow(buf: *mut c_void) -> usize;
         fn CVPixelBufferLockBaseAddress(buf: *mut c_void, flags: u64) -> i32;
         fn CVPixelBufferUnlockBaseAddress(buf: *mut c_void, flags: u64) -> i32;
         fn CVPixelBufferGetBaseAddress(buf: *mut c_void) -> *mut u8;
+        fn CVPixelBufferRetain(buf: *mut c_void) -> *mut c_void;
         fn CFRelease(cf: *mut c_void);
     }
+
+    // kCFStringEncodingUTF8 = 0x08000100
+    const CF_STRING_ENCODING_UTF8: u32 = 0x08000100;
+    // kCFNumberDoubleType = 13
+    const CF_NUMBER_DOUBLE_TYPE: u32 = 13;
+    // OBJC_ASSOCIATION_ASSIGN = 0 (non-retaining; we manage the Arc lifetime ourselves)
+    const OBJC_ASSOCIATION_ASSIGN: usize = 0;
+
+    // Stable address used as the associated-object key; never dereferenced.
+    static SLOT_ASSOC_KEY: u8 = 0;
 
     // Shared state between the SCStreamOutput callback and acquire_frame.
     struct FrameSlot {
@@ -830,21 +851,39 @@ mod platform {
 
     pub(super) struct Backend {
         // SCStream opaque handle (strongly retained).
-        _stream: *mut c_void,
-        slot:    Arc<(Mutex<FrameSlot>, Condvar)>,
+        _stream:   *mut c_void,
+        // LBStreamOutput delegate instance (strongly retained).
+        _delegate: *mut c_void,
+        slot:      Arc<(Mutex<FrameSlot>, Condvar)>,
     }
 
-    // SAFETY: the stream handle is only used to keep the SCStream alive; all
-    // mutable access goes through the Arc<Mutex>.
+    // SAFETY: all mutable state goes through the Arc<Mutex>; stream/delegate
+    // handles are accessed from a single capture thread only.
     unsafe impl Send for Backend {}
 
     impl Drop for Backend {
         fn drop(&mut self) {
-            // Stop the stream and release the pixel buffer if held.
-            let sel_stop = unsafe { sel_registerName(b"stopCaptureWithCompletionHandler:\0".as_ptr()) };
-            unsafe { objc_msgSend(self._stream, sel_stop, std::ptr::null::<c_void>()) };
-            unsafe { CFRelease(self._stream) };
-
+            unsafe {
+                // Stop the stream; ignore completion errors on teardown.
+                let sel_stop = sel_registerName(
+                    b"stopCaptureWithCompletionHandler:\0".as_ptr()
+                );
+                objc_msgSend(self._stream, sel_stop, std::ptr::null::<c_void>());
+                CFRelease(self._stream);
+                // Release the delegate (also drops the retained slot pointer stored
+                // as an associated object via OBJC_ASSOCIATION_ASSIGN — we manage
+                // the Arc refcount ourselves by reconstructing it here).
+                let raw = objc_getAssociatedObject(
+                    self._delegate,
+                    &SLOT_ASSOC_KEY as *const u8 as *const c_void,
+                );
+                if !raw.is_null() {
+                    // Reconstruct and drop the Arc clone we leaked in open().
+                    drop(Arc::from_raw(raw as *const (Mutex<FrameSlot>, Condvar)));
+                }
+                CFRelease(self._delegate);
+            }
+            // Release the retained CVPixelBufferRef if one is still held.
             let (lock, _) = &*self.slot;
             if let Some(pb) = lock.lock().unwrap().pixel_buf.take() {
                 if !pb.is_null() {
@@ -854,9 +893,137 @@ mod platform {
         }
     }
 
+    // ── Delegate class — registered once per process ──────────────────────────
+
+    fn lb_stream_output_class() -> *mut c_void {
+        use std::sync::OnceLock;
+        static CLS: OnceLock<usize> = OnceLock::new();
+        let val = CLS.get_or_init(|| unsafe {
+            let ns_object = objc_getClass(b"NSObject\0".as_ptr());
+            let cls = objc_allocateClassPair(ns_object, b"LBStreamOutput\0".as_ptr(), 0);
+            if cls.is_null() {
+                return 0usize;
+            }
+            let sel = sel_registerName(
+                b"stream:didOutputSampleBuffer:ofType:\0".as_ptr(),
+            );
+            // Type encoding: void return, id self, SEL _cmd, id stream,
+            // CMSampleBufferRef sampleBuffer, NSInteger outputType.
+            class_addMethod(
+                cls,
+                sel,
+                stream_output_callback as *mut c_void,
+                b"v@:@@q\0".as_ptr(),
+            );
+            objc_registerClassPair(cls);
+            cls as usize
+        });
+        *val as *mut c_void
+    }
+
+    // ── SCStreamOutput callback (invoked on SCKit's internal queue) ───────────
+
+    unsafe extern "C" fn stream_output_callback(
+        self_obj: *mut c_void,
+        _sel:     *mut c_void,
+        _stream:  *mut c_void,
+        sample_buf: *mut c_void, // CMSampleBufferRef
+        _output_type: i64,       // SCStreamOutputType (.screen = 0)
+    ) {
+        let raw = objc_getAssociatedObject(
+            self_obj,
+            &SLOT_ASSOC_KEY as *const u8 as *const c_void,
+        );
+        if raw.is_null() { return; }
+        // SAFETY: raw was stored from Arc::as_ptr, which returns a pointer into
+        // the allocation that outlives this callback (Backend holds the Arc).
+        let slot = &*(raw as *const (Mutex<FrameSlot>, Condvar));
+
+        let pb = CMSampleBufferGetImageBuffer(sample_buf);
+        if pb.is_null() {
+            let (lock, cvar) = slot;
+            let mut g = lock.lock().unwrap();
+            g.error = true;
+            cvar.notify_all();
+            return;
+        }
+        CVPixelBufferRetain(pb);
+
+        let dirty_rects = parse_dirty_rects(sample_buf);
+
+        let (lock, cvar) = slot;
+        let mut g = lock.lock().unwrap();
+        if let Some(old) = g.pixel_buf.take() {
+            if !old.is_null() { CFRelease(old); }
+        }
+        g.pixel_buf   = Some(pb);
+        g.dirty_rects = dirty_rects;
+        g.fresh       = true;
+        cvar.notify_all();
+    }
+
+    // ── Dirty rect extraction from CMSampleBuffer frame-info attachment ───────
+
+    unsafe fn parse_dirty_rects(sample_buf: *mut c_void) -> Vec<DirtyRect> {
+        // CMSampleBufferGetSampleAttachmentsArray returns a CFArrayRef of
+        // CFDictionaryRef (one per sample).  The first dict contains the
+        // SCStreamFrameInfo keys including SCStreamFrameInfoDirtyRects.
+        let attachments = CMSampleBufferGetSampleAttachmentsArray(sample_buf, false);
+        if attachments.is_null() || CFArrayGetCount(attachments) == 0 {
+            return Vec::new();
+        }
+        let frame_info = CFArrayGetValueAtIndex(attachments, 0);
+        if frame_info.is_null() {
+            return Vec::new();
+        }
+
+        let key = CFStringCreateWithCString(
+            std::ptr::null(),
+            b"SCStreamFrameInfoDirtyRects\0".as_ptr(),
+            CF_STRING_ENCODING_UTF8,
+        );
+        if key.is_null() { return Vec::new(); }
+        let rects_array = CFDictionaryGetValue(frame_info, key as *const c_void);
+        CFRelease(key);
+        if rects_array.is_null() { return Vec::new(); }
+
+        // SCStreamFrameInfoDirtyRects is NSArray<NSDictionary *> where each
+        // dict has NSNumber values for the keys "X", "Y", "Width", "Height".
+        let n = CFArrayGetCount(rects_array);
+        let mut out = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            let rect_dict = CFArrayGetValueAtIndex(rects_array, i);
+            if rect_dict.is_null() { continue; }
+            let x = cf_dict_f64(rect_dict, b"X\0")      as i32;
+            let y = cf_dict_f64(rect_dict, b"Y\0")      as i32;
+            let w = cf_dict_f64(rect_dict, b"Width\0")  as u32;
+            let h = cf_dict_f64(rect_dict, b"Height\0") as u32;
+            if w > 0 && h > 0 {
+                out.push(DirtyRect { x, y, width: w, height: h });
+            }
+        }
+        out
+    }
+
+    unsafe fn cf_dict_f64(dict: *const c_void, key_cstr: &[u8]) -> f64 {
+        let key = CFStringCreateWithCString(
+            std::ptr::null(),
+            key_cstr.as_ptr(),
+            CF_STRING_ENCODING_UTF8,
+        );
+        if key.is_null() { return 0.0; }
+        let val = CFDictionaryGetValue(dict, key as *const c_void);
+        CFRelease(key);
+        if val.is_null() { return 0.0; }
+        let mut v: f64 = 0.0;
+        CFNumberGetValue(val, CF_NUMBER_DOUBLE_TYPE, &mut v as *mut f64 as *mut c_void);
+        v
+    }
+
+    // ── Backend ───────────────────────────────────────────────────────────────
+
     impl Backend {
         pub(super) fn open(_pw_fd: i32) -> Result<Self, CaptureError> {
-            // Check TCC Screen Recording right (set by request_grant earlier).
             let granted = unsafe { CGRequestScreenCaptureAccess() };
             if !granted {
                 return Err(CaptureError::NotGranted);
@@ -872,90 +1039,101 @@ mod platform {
                 Condvar::new(),
             ));
 
-            // Build SCContentFilter for the main display.
-            // [SCShareableContent getShareableContentWithCompletionHandler:] is
-            // async; for simplicity we use the synchronous
-            // SCStreamConfiguration + SCContentFilter(desktopIndependentWindow:)
-            // path via the display-index API.
-            let stream = unsafe {
+            let (stream, delegate) = unsafe {
                 let cls_cfg = objc_getClass(b"SCStreamConfiguration\0".as_ptr());
                 let sel_new = sel_registerName(b"new\0".as_ptr());
                 let cfg: *mut c_void = objc_msgSend(cls_cfg, sel_new);
                 if cfg.is_null() {
                     return Err(CaptureError::Unavailable);
                 }
+                // BGRA8 pixel format (kCVPixelFormatType_32BGRA = 0x42475241).
+                objc_msgSend(cfg, sel_registerName(b"setPixelFormat:\0".as_ptr()), 0x42475241u32);
 
-                // Set pixel format to BGRA8 (kCVPixelFormatType_32BGRA = 0x42475241).
-                let sel_fmt = sel_registerName(b"setPixelFormat:\0".as_ptr());
-                objc_msgSend(cfg, sel_fmt, 0x42475241u32);
-
-                // SCContentFilter for the main CGDisplay.
                 let cls_filter = objc_getClass(b"SCContentFilter\0".as_ptr());
-                let sel_init   = sel_registerName(
-                    b"initWithDisplay:excludingWindows:\0".as_ptr()
-                );
-                // CGMainDisplayID() = 0 (valid sentinel for the primary display).
                 let filter: *mut c_void = objc_msgSend(
                     objc_msgSend(cls_filter, sel_registerName(b"alloc\0".as_ptr())),
-                    sel_init,
-                    0u32,               // CGDirectDisplayID for main display
-                    std::ptr::null::<c_void>(), // no excluded windows
+                    sel_registerName(b"initWithDisplay:excludingWindows:\0".as_ptr()),
+                    0u32,               // CGMainDisplayID sentinel
+                    std::ptr::null::<c_void>(),
                 );
                 if filter.is_null() {
                     objc_msgSend(cfg, sel_registerName(b"release\0".as_ptr()));
                     return Err(CaptureError::Unavailable);
                 }
 
-                // SCStream alloc + initWithFilter:configuration:delegate:
                 let cls_stream = objc_getClass(b"SCStream\0".as_ptr());
-                let sel_init_s = sel_registerName(
-                    b"initWithFilter:configuration:delegate:\0".as_ptr()
-                );
-                // Delegate is set to nil; frames are delivered via addStreamOutput:type:sampleHandlerQueue:error:
                 let stream: *mut c_void = objc_msgSend(
                     objc_msgSend(cls_stream, sel_registerName(b"alloc\0".as_ptr())),
-                    sel_init_s,
+                    sel_registerName(b"initWithFilter:configuration:delegate:\0".as_ptr()),
                     filter,
                     cfg,
-                    std::ptr::null::<c_void>(),
+                    std::ptr::null::<c_void>(), // delegate set via addStreamOutput below
                 );
                 objc_msgSend(filter, sel_registerName(b"release\0".as_ptr()));
                 objc_msgSend(cfg,    sel_registerName(b"release\0".as_ptr()));
-
                 if stream.is_null() {
                     return Err(CaptureError::Unavailable);
                 }
-                stream
+
+                // Create the LBStreamOutput delegate instance.
+                let cls_output = lb_stream_output_class();
+                if cls_output.is_null() {
+                    CFRelease(stream);
+                    return Err(CaptureError::Unavailable);
+                }
+                let delegate: *mut c_void =
+                    objc_msgSend(cls_output, sel_registerName(b"new\0".as_ptr()));
+                if delegate.is_null() {
+                    CFRelease(stream);
+                    return Err(CaptureError::Unavailable);
+                }
+
+                // Store the Arc's inner-data pointer as a non-retaining associated
+                // object.  Backend holds the real Arc refcount so the data lives
+                // at least as long as the delegate is used.
+                let slot_raw = Arc::into_raw(slot.clone()) as *mut c_void;
+                objc_setAssociatedObject(
+                    delegate,
+                    &SLOT_ASSOC_KEY as *const u8 as *const c_void,
+                    slot_raw,
+                    OBJC_ASSOCIATION_ASSIGN,
+                );
+
+                // Register the output handler — SCStreamOutputType.screen = 0.
+                objc_msgSend(
+                    stream,
+                    sel_registerName(b"addStreamOutput:type:sampleHandlerQueue:error:\0".as_ptr()),
+                    delegate,
+                    0i64, // SCStreamOutputType.screen
+                    std::ptr::null::<c_void>(), // nil queue → SCKit internal queue
+                    std::ptr::null::<*mut c_void>(), // ignore error pointer
+                );
+
+                // Start the capture stream (asynchronous; errors surface on first frame).
+                objc_msgSend(
+                    stream,
+                    sel_registerName(b"startCaptureWithCompletionHandler:\0".as_ptr()),
+                    std::ptr::null::<c_void>(),
+                );
+
+                (stream, delegate)
             };
 
-            let backend = Backend { _stream: stream, slot: slot.clone() };
-
-            // Start capture (async; errors surface on first acquire_frame).
-            unsafe {
-                let sel_start = sel_registerName(b"startCaptureWithCompletionHandler:\0".as_ptr());
-                objc_msgSend(stream, sel_start, std::ptr::null::<c_void>());
-            }
-
-            Ok(backend)
+            Ok(Backend { _stream: stream, _delegate: delegate, slot })
         }
 
         pub(super) fn acquire_frame(&self) -> Result<CaptureFrame, CaptureError> {
             let (lock, cvar) = &*self.slot;
             let mut guard = lock.lock().unwrap();
 
-            // Wait up to 100 ms for a fresh frame.
             let timeout = std::time::Duration::from_millis(100);
             let (mut g, timed_out) = cvar
                 .wait_timeout_while(guard, timeout, |s| !s.fresh && !s.error)
                 .unwrap();
             guard = g;
 
-            if guard.error {
-                return Err(CaptureError::OsRejected);
-            }
-            if timed_out.timed_out() {
-                return Err(CaptureError::NoNewFrame);
-            }
+            if guard.error           { return Err(CaptureError::OsRejected); }
+            if timed_out.timed_out() { return Err(CaptureError::NoNewFrame);  }
 
             let pb = match guard.pixel_buf {
                 Some(p) if !p.is_null() => p,
@@ -967,13 +1145,12 @@ mod platform {
                 let w  = CVPixelBufferGetWidth(pb)  as u32;
                 let h  = CVPixelBufferGetHeight(pb) as u32;
                 let sr = CVPixelBufferGetBytesPerRow(pb) as u32;
-                let base = CVPixelBufferGetBaseAddress(pb);
+                let base      = CVPixelBufferGetBaseAddress(pb);
                 let row_bytes = (w * 4) as usize;
-                let total     = sr as usize * h as usize;
-                let raw: Vec<u8> = std::slice::from_raw_parts(base, total).to_vec();
+                let raw: Vec<u8> =
+                    std::slice::from_raw_parts(base, sr as usize * h as usize).to_vec();
                 CVPixelBufferUnlockBaseAddress(pb, 0);
 
-                // Pack rows if stride > row_bytes.
                 let packed = if sr as usize != row_bytes {
                     let mut p = vec![0u8; row_bytes * h as usize];
                     for row in 0..h as usize {
@@ -1139,6 +1316,43 @@ mod platform {
         _thread:    std::thread::JoinHandle<()>,
     }
 
+    // ── SPA_META_VideoDamage parser ───────────────────────────────────────────
+
+    // SPA_META_VideoDamage = 4; each entry is a spa_region (16 bytes):
+    //   i32 x @0, i32 y @4, u32 width @8, u32 height @12.
+    // A region with width == 0 is the PipeWire full-frame-damage sentinel.
+    unsafe fn extract_damage_rects(metas_ptr: *const u8, n_metas: u32) -> Vec<DirtyRect> {
+        const SPA_META_VIDEO_DAMAGE: u32 = 4;
+        const SPA_META_STRIDE: usize     = 16; // sizeof(spa_meta) on 64-bit
+        const SPA_REGION_STRIDE: usize   = 16; // sizeof(spa_region)
+
+        if metas_ptr.is_null() || n_metas == 0 {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for i in 0..n_metas as usize {
+            let meta      = metas_ptr.add(i * SPA_META_STRIDE);
+            let meta_type = *(meta as *const u32);
+            let meta_size = *(meta.add(4) as *const u32);
+            let meta_data: *const u8 = *(meta.add(8) as *const *const u8);
+            if meta_type != SPA_META_VIDEO_DAMAGE || meta_data.is_null() || meta_size == 0 {
+                continue;
+            }
+            let n_regions = meta_size as usize / SPA_REGION_STRIDE;
+            for j in 0..n_regions {
+                let r = meta_data.add(j * SPA_REGION_STRIDE);
+                let x = *(r as *const i32);
+                let y = *(r.add(4) as *const i32);
+                let w = *(r.add(8) as *const u32);
+                let h = *(r.add(12) as *const u32);
+                if w > 0 && h > 0 {
+                    out.push(DirtyRect { x, y, width: w, height: h });
+                }
+            }
+        }
+        out
+    }
+
     unsafe impl Send for Backend {}
 
     impl Drop for Backend {
@@ -1263,7 +1477,6 @@ mod platform {
             // Dequeue the next PipeWire buffer from the stream.
             let buf = unsafe { (self.lib.pw_stream_dequeue_buffer)(self.stream) };
             if buf.is_null() {
-                // Check whether the loop has exited.
                 let (lock, _) = &*self.slot;
                 if lock.lock().unwrap().error {
                     return Err(CaptureError::OsRejected);
@@ -1272,88 +1485,71 @@ mod platform {
             }
 
             // A pw_buffer wraps a spa_buffer; the first data entry holds the
-            // memory-mapped frame data.  Layout (approximate, 64-bit):
-            //   pw_buffer {
-            //     spa_buffer *buffer;   // offset 0
-            //     void       *user_data; // offset 8
-            //     uint64_t    size;      // offset 16
-            //   }
-            // spa_buffer {
-            //     uint32_t n_metas; // offset 0
-            //     uint32_t n_datas; // offset 4
-            //     spa_meta  *metas; // offset 8
-            //     spa_data  *datas; // offset 16
-            // }
-            // spa_data {
-            //     uint32_t type;      // offset 0
-            //     uint32_t flags;     // offset 4
-            //     int      fd;        // offset 8 (union fd / ptr)
-            //     uint32_t mapoffset; // offset 12
-            //     uint32_t maxsize;   // offset 16
-            //     void    *data;      // offset 24 (pointer to mapped region)
-            //     spa_chunk *chunk;   // offset 32
-            // }
-            // spa_chunk { uint32_t offset; uint32_t size; int32_t stride; int32_t flags; }
-
-            // We use fixed offsets matching the ABI for the stable PipeWire 0.3 API
-            // (same layout on x86-64 and arm64 little-endian).
-            let pixels = unsafe {
-                let spa_buf:  *const u8 = *(buf as *const *const u8).add(0);
+            // memory-mapped frame data.  Fixed ABI offsets for PipeWire 0.3
+            // (stable, same on x86-64 and arm64 little-endian):
+            //
+            //   pw_buffer  { spa_buffer *buffer @0; void *user_data @8; u64 size @16 }
+            //   spa_buffer { u32 n_metas @0; u32 n_datas @4; spa_meta *metas @8;
+            //                spa_data *datas @16 }
+            //   spa_meta   { u32 type @0; u32 size @4; void *data @8 }  (16 B)
+            //   spa_data   { u32 type @0; u32 flags @4; int fd @8; u32 mapoffset @12;
+            //                u32 maxsize @16; void *data @24; spa_chunk *chunk @32 }
+            //   spa_chunk  { u32 offset @0; u32 size @4; i32 stride @8; i32 flags @12 }
+            //   spa_region { i32 x @0; i32 y @4; u32 width @8; u32 height @12 }  (16 B)
+            //
+            // SPA_META_VideoDamage = 4; its data is an array of spa_region.
+            // stride / 4 = width (BGRA8), chunk_size / stride = height.
+            let (pixels, width, height, stride, dirty_rects) = unsafe {
+                let spa_buf: *const u8 = *(buf as *const *const u8).add(0);
                 if spa_buf.is_null() {
                     (self.lib.pw_stream_queue_buffer)(self.stream, buf);
                     return Err(CaptureError::NoNewFrame);
                 }
 
-                let n_datas = *(spa_buf.add(4) as *const u32);
+                // ── Dirty rects from SPA_META_VideoDamage ──────────────────
+                let n_metas:    u32 = *(spa_buf as *const u32);           // offset 0
+                let metas_ptr: *const u8 = *(spa_buf.add(8) as *const *const u8); // offset 8
+                let dirty_rects = extract_damage_rects(metas_ptr, n_metas);
+
+                // ── Pixel data from the first spa_data entry ────────────────
+                let n_datas: u32 = *(spa_buf.add(4) as *const u32);       // offset 4
                 if n_datas == 0 {
                     (self.lib.pw_stream_queue_buffer)(self.stream, buf);
                     return Err(CaptureError::NoNewFrame);
                 }
-
-                // datas pointer is at offset 16 in spa_buffer.
-                let datas_ptr: *const u8 = *(spa_buf.add(16) as *const *const u8);
+                let datas_ptr: *const u8 = *(spa_buf.add(16) as *const *const u8); // offset 16
                 if datas_ptr.is_null() {
                     (self.lib.pw_stream_queue_buffer)(self.stream, buf);
                     return Err(CaptureError::NoNewFrame);
                 }
 
-                // First spa_data entry: data pointer at offset 24, chunk at offset 32.
-                let data_ptr = *(datas_ptr.add(24) as *const *const u8);
-                let chunk: *const u8 = *(datas_ptr.add(32) as *const *const u8);
-
+                let data_ptr:  *const u8 = *(datas_ptr.add(24) as *const *const u8);
+                let chunk:     *const u8 = *(datas_ptr.add(32) as *const *const u8);
                 if data_ptr.is_null() || chunk.is_null() {
                     (self.lib.pw_stream_queue_buffer)(self.stream, buf);
                     return Err(CaptureError::NoNewFrame);
                 }
 
-                let chunk_size:   u32 = *(chunk.add(4)  as *const u32);
-                let chunk_stride: i32 = *(chunk.add(8)  as *const i32);
-
+                let chunk_size:   u32 = *(chunk.add(4) as *const u32);
+                let chunk_stride: i32 = *(chunk.add(8) as *const i32);
                 if chunk_size == 0 || chunk_stride <= 0 {
+                    (self.lib.pw_stream_queue_buffer)(self.stream, buf);
+                    return Err(CaptureError::NoNewFrame);
+                }
+
+                // Derive width and height from BGRA8 stride (4 bytes/pixel).
+                let stride = chunk_stride as u32;
+                let width  = stride / 4;
+                let height = chunk_size / stride;
+                if width == 0 || height == 0 {
                     (self.lib.pw_stream_queue_buffer)(self.stream, buf);
                     return Err(CaptureError::NoNewFrame);
                 }
 
                 let raw = std::slice::from_raw_parts(data_ptr, chunk_size as usize).to_vec();
                 (self.lib.pw_stream_queue_buffer)(self.stream, buf);
-                raw
+                (raw, width, height, stride, dirty_rects)
             };
-
-            // Derive width/height from stride assuming BGRA8 (4 bytes/pixel).
-            // The portal negotiates the format; we request BGRA via the spa
-            // video format param on connect (simplified here to derive from chunk).
-            let (lock, _) = &*self.slot;
-            let guard = lock.lock().unwrap();
-            let width  = guard.width;
-            let height = guard.height;
-            let stride = guard.stride;
-            let dirty_rects = guard.dirty_rects.clone();
-            drop(guard);
-
-            if width == 0 || height == 0 {
-                // Dimensions not yet known (no SPA_META_VideoCrop delivered yet).
-                return Err(CaptureError::NoNewFrame);
-            }
 
             Ok(CaptureFrame { pixels, width, height, stride, dirty_rects, cursor_shape: None })
         }
