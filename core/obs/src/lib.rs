@@ -109,11 +109,12 @@ mod tests {
         let ocr = OcrProbe::new();
         // Blank frame at 320 × 200 BGRA8 (char height = 200/25 = 8 px — gate pass).
         let cap = CaptureFrame {
-            pixels:      vec![0u8; 320 * 200 * 4],
-            width:       320,
-            height:      200,
-            stride:      320 * 4,
-            dirty_rects: vec![],
+            pixels:       vec![0u8; 320 * 200 * 4],
+            width:        320,
+            height:       200,
+            stride:       320 * 4,
+            dirty_rects:  vec![],
+            cursor_shape: None,
         };
         let ocr_score = ocr.score_frame(&cap);
         assert!(ocr_score.score >= 0.0 && ocr_score.score <= 1.0,

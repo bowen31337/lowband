@@ -231,8 +231,9 @@ mod tests {
             pixels:      vec![255u8; (width * height * 4) as usize],
             width,
             height,
-            stride:      width * 4,
-            dirty_rects: vec![],
+            stride:       width * 4,
+            dirty_rects:  vec![],
+            cursor_shape: None,
         }
     }
 
@@ -256,8 +257,9 @@ mod tests {
             pixels,
             width,
             height,
-            stride:      width * 4,
-            dirty_rects: vec![],
+            stride:       width * 4,
+            dirty_rects:  vec![],
+            cursor_shape: None,
         }
     }
 
@@ -280,8 +282,9 @@ mod tests {
             pixels,
             width,
             height,
-            stride:      width * 4,
-            dirty_rects: vec![],
+            stride:       width * 4,
+            dirty_rects:  vec![],
+            cursor_shape: None,
         }
     }
 
@@ -425,8 +428,9 @@ mod tests {
             pixels:      vec![100u8; 4 * 4 * 4],
             width:       4,
             height:      4,
-            stride:      16,
-            dirty_rects: vec![],
+            stride:       16,
+            dirty_rects:  vec![],
+            cursor_shape: None,
         };
         let s = OcrProbe::new().score_frame(&frame);
         assert_eq!(s.score, 0.0);
@@ -450,7 +454,7 @@ mod tests {
                 pixels[idx + 3] = 255;
             }
         }
-        let frame = CaptureFrame { pixels, width, height, stride, dirty_rects: vec![] };
+        let frame = CaptureFrame { pixels, width, height, stride, dirty_rects: vec![], cursor_shape: None };
         let s = OcrProbe::new().score_frame(&frame);
         assert!(
             s.score > 0.0,

@@ -34,12 +34,15 @@
 //! // 2. Open the backend.
 //! //    On Linux, pass the PipeWire fd from org.freedesktop.portal.ScreenCast.
 //! //    On all other platforms pass -1.
-//! let broker = ScreenCaptureBroker::open(-1).expect("open broker");
+//! let mut broker = ScreenCaptureBroker::open(-1).expect("open broker");
 //!
 //! // 3. Acquire frames.
 //! let frame: CaptureFrame = broker.acquire_frame().expect("acquire frame");
 //! println!("{}×{} frame, {} dirty rects", frame.width, frame.height, frame.dirty_rects.len());
 //! ```
+
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use crate::elevation::{ElevationOutcome, ElevationRequest, EscalationReason};
 
@@ -55,6 +58,25 @@ pub struct DirtyRect {
     pub height: u32,
 }
 
+/// A hardware cursor shape captured from the OS.
+///
+/// Pixels are BGRA8, tightly packed (no padding between rows).
+/// Only emitted by [`ScreenCaptureBroker::acquire_frame`] when the shape
+/// differs from all previously seen shapes this session (deduplicated by hash).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CursorShape {
+    /// Cursor image width in pixels.
+    pub width:     u32,
+    /// Cursor image height in pixels.
+    pub height:    u32,
+    /// Hotspot X offset from the top-left of the cursor image.
+    pub hotspot_x: i32,
+    /// Hotspot Y offset from the top-left of the cursor image.
+    pub hotspot_y: i32,
+    /// Raw pixel data (BGRA8), `width * height * 4` bytes.
+    pub pixels:    Vec<u8>,
+}
+
 /// A captured screen frame returned by [`ScreenCaptureBroker::acquire_frame`].
 ///
 /// `pixels` is BGRA8 on Windows (DXGI native), BGRA8 on macOS
@@ -62,16 +84,50 @@ pub struct DirtyRect {
 /// Stride may exceed `width * 4` due to alignment padding.
 pub struct CaptureFrame {
     /// Raw pixel data (BGRA8).
-    pub pixels:      Vec<u8>,
+    pub pixels:       Vec<u8>,
     /// Frame width in pixels.
-    pub width:       u32,
+    pub width:        u32,
     /// Frame height in pixels.
-    pub height:      u32,
+    pub height:       u32,
     /// Row stride in bytes (>= `width * 4`).
-    pub stride:      u32,
+    pub stride:       u32,
     /// Dirty regions relative to the top-left of the captured surface.
     /// Empty when the backend does not report damage (full-frame capture).
-    pub dirty_rects: Vec<DirtyRect>,
+    pub dirty_rects:  Vec<DirtyRect>,
+    /// New cursor shape, present only when the shape changed since the last
+    /// emission.  `None` on every frame where the cursor shape is unchanged.
+    pub cursor_shape: Option<CursorShape>,
+}
+
+// ── CursorShapeCache ──────────────────────────────────────────────────────────
+
+/// Session-scoped deduplicator: tracks hashes of every cursor shape emitted so
+/// far and reports whether an incoming shape is genuinely new.
+struct CursorShapeCache {
+    seen: std::collections::HashSet<u64>,
+}
+
+impl CursorShapeCache {
+    fn new() -> Self {
+        Self { seen: std::collections::HashSet::new() }
+    }
+
+    /// Returns `true` and records the hash if `shape` has not been seen before;
+    /// returns `false` if an identical shape was emitted earlier this session.
+    fn is_new(&mut self, shape: &CursorShape) -> bool {
+        let h = Self::hash(shape);
+        self.seen.insert(h)
+    }
+
+    fn hash(shape: &CursorShape) -> u64 {
+        let mut h = DefaultHasher::new();
+        shape.width.hash(&mut h);
+        shape.height.hash(&mut h);
+        shape.hotspot_x.hash(&mut h);
+        shape.hotspot_y.hash(&mut h);
+        shape.pixels.hash(&mut h);
+        h.finish()
+    }
 }
 
 /// Error returned when a capture call fails.
@@ -115,7 +171,8 @@ impl std::fmt::Display for CaptureError {
 /// [`acquire_frame`](Self::acquire_frame) method.  Construct via
 /// [`open`](Self::open).
 pub struct ScreenCaptureBroker {
-    inner: platform::Backend,
+    inner:         platform::Backend,
+    cursor_cache:  CursorShapeCache,
 }
 
 impl ScreenCaptureBroker {
@@ -141,7 +198,10 @@ impl ScreenCaptureBroker {
     /// initialise (e.g. PipeWire fd is invalid, DXGI output not found,
     /// ScreenCaptureKit stream start failed).
     pub fn open(pw_fd: i32) -> Result<Self, CaptureError> {
-        Ok(Self { inner: platform::Backend::open(pw_fd)? })
+        Ok(Self {
+            inner:        platform::Backend::open(pw_fd)?,
+            cursor_cache: CursorShapeCache::new(),
+        })
     }
 
     /// Acquire the next available screen frame.
@@ -149,8 +209,18 @@ impl ScreenCaptureBroker {
     /// Returns `Ok(CaptureFrame)` when a new frame is available, or
     /// `Err(CaptureError::NoNewFrame)` when the display is unchanged.
     /// Other error variants indicate a more serious backend failure.
-    pub fn acquire_frame(&self) -> Result<CaptureFrame, CaptureError> {
-        self.inner.acquire_frame()
+    ///
+    /// `cursor_shape` in the returned frame is `Some` only when the cursor
+    /// image changed since the last emission; identical shapes are suppressed
+    /// so each distinct shape is sent at most once per session.
+    pub fn acquire_frame(&mut self) -> Result<CaptureFrame, CaptureError> {
+        let mut frame = self.inner.acquire_frame()?;
+        if let Some(ref shape) = frame.cursor_shape {
+            if !self.cursor_cache.is_new(shape) {
+                frame.cursor_shape = None;
+            }
+        }
+        Ok(frame)
     }
 }
 
@@ -196,7 +266,7 @@ impl ScreenCaptureBroker {
 
 #[cfg(target_os = "windows")]
 mod platform {
-    use super::{CaptureError, CaptureFrame, DirtyRect};
+    use super::{CaptureError, CaptureFrame, CursorShape, DirtyRect};
     use std::ffi::c_void;
     use std::mem;
 
@@ -358,6 +428,23 @@ mod platform {
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct Rect { left: i32, top: i32, right: i32, bottom: i32 }
+
+    // DXGI_OUTDUPL_POINTER_SHAPE_INFO
+    // Layout: Type(u32) + Width(u32) + Height(u32) + Pitch(u32) + HotSpot.x(i32) + HotSpot.y(i32) = 24 bytes
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct PointerShapeInfo {
+        shape_type: u32,
+        width:      u32,
+        height:     u32,
+        pitch:      u32,
+        hotspot_x:  i32,
+        hotspot_y:  i32,
+    }
+
+    // DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR = 2, MASKED_COLOR = 4 (both are BGRA8)
+    const POINTER_SHAPE_COLOR:        u32 = 2;
+    const POINTER_SHAPE_MASKED_COLOR: u32 = 4;
 
     // ── D3D11 constants ───────────────────────────────────────────────────────
 
@@ -545,6 +632,53 @@ mod platform {
                     }).collect::<Vec<_>>()
                 };
 
+                // Capture cursor shape if updated this frame (must happen before ReleaseFrame).
+                // GetFramePointerShape — IDXGIOutputDuplication vtable[11].
+                let cursor_shape = if info.pointer_shape_buffer_size > 0 {
+                    let buf_size = info.pointer_shape_buffer_size as usize;
+                    let mut shape_buf: Vec<u8> = vec![0u8; buf_size];
+                    let mut psi: PointerShapeInfo = mem::zeroed();
+                    let mut required: u32 = 0;
+                    let get_shape: unsafe extern "system" fn(
+                        *mut c_void, u32, *mut c_void, *mut u32, *mut PointerShapeInfo,
+                    ) -> i32 = std::mem::transmute(*vtbl.add(11));
+                    let hr = get_shape(
+                        self.duplication,
+                        buf_size as u32,
+                        shape_buf.as_mut_ptr() as *mut c_void,
+                        &mut required,
+                        &mut psi,
+                    );
+                    if hr >= 0
+                        && psi.width > 0
+                        && psi.height > 0
+                        && (psi.shape_type == POINTER_SHAPE_COLOR
+                            || psi.shape_type == POINTER_SHAPE_MASKED_COLOR)
+                    {
+                        // Pack from pitch-strided layout to tight BGRA8.
+                        let row_bytes = (psi.width * 4) as usize;
+                        let mut pixels = vec![0u8; row_bytes * psi.height as usize];
+                        for row in 0..psi.height as usize {
+                            let src = row * psi.pitch as usize;
+                            let end = (src + row_bytes).min(buf_size);
+                            let dst = row * row_bytes;
+                            pixels[dst..dst + (end - src)]
+                                .copy_from_slice(&shape_buf[src..end]);
+                        }
+                        Some(CursorShape {
+                            width:     psi.width,
+                            height:    psi.height,
+                            hotspot_x: psi.hotspot_x,
+                            hotspot_y: psi.hotspot_y,
+                            pixels,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 // QI resource → ID3D11Texture2D.
                 let mut src_tex: *mut c_void = std::ptr::null_mut();
                 let hr = query_interface(resource, &IID_ID3D11TEXTURE2D, &mut src_tex);
@@ -632,10 +766,11 @@ mod platform {
 
                 Ok(CaptureFrame {
                     pixels,
-                    width:       self.width,
-                    height:      self.height,
-                    stride:      self.width * 4,
+                    width:        self.width,
+                    height:       self.height,
+                    stride:       self.width * 4,
                     dirty_rects,
+                    cursor_shape,
                 })
             }
         }
@@ -856,7 +991,7 @@ mod platform {
             let dirty_rects = std::mem::take(&mut guard.dirty_rects);
             guard.fresh = false;
 
-            Ok(CaptureFrame { pixels, width, height, stride, dirty_rects })
+            Ok(CaptureFrame { pixels, width, height, stride, dirty_rects, cursor_shape: None })
         }
     }
 }
@@ -1220,7 +1355,7 @@ mod platform {
                 return Err(CaptureError::NoNewFrame);
             }
 
-            Ok(CaptureFrame { pixels, width, height, stride, dirty_rects })
+            Ok(CaptureFrame { pixels, width, height, stride, dirty_rects, cursor_shape: None })
         }
     }
 }
@@ -1265,11 +1400,12 @@ mod tests {
     #[test]
     fn capture_frame_fields_accessible() {
         let f = CaptureFrame {
-            pixels:      vec![0u8; 4],
-            width:       1,
-            height:      1,
-            stride:      4,
-            dirty_rects: vec![DirtyRect { x: 0, y: 0, width: 1, height: 1 }],
+            pixels:       vec![0u8; 4],
+            width:        1,
+            height:       1,
+            stride:       4,
+            dirty_rects:  vec![DirtyRect { x: 0, y: 0, width: 1, height: 1 }],
+            cursor_shape: None,
         };
         assert_eq!(f.width * f.height * 4, f.pixels.len() as u32);
     }
@@ -1301,6 +1437,59 @@ mod tests {
         match ScreenCaptureBroker::open(-1) {
             Err(CaptureError::Unavailable) => {}
             other => panic!("expected Unavailable, got {:?}", other.err()),
+        }
+    }
+
+    // ── CursorShapeCache ──────────────────────────────────────────────────────
+
+    fn make_shape(w: u32, h: u32, hx: i32, hy: i32, fill: u8) -> CursorShape {
+        CursorShape {
+            width: w, height: h,
+            hotspot_x: hx, hotspot_y: hy,
+            pixels: vec![fill; (w * h * 4) as usize],
+        }
+    }
+
+    #[test]
+    fn cursor_shape_cache_first_occurrence_is_new() {
+        let mut cache = CursorShapeCache::new();
+        let shape = make_shape(32, 32, 0, 0, 0);
+        assert!(cache.is_new(&shape), "first occurrence must be reported as new");
+    }
+
+    #[test]
+    fn cursor_shape_cache_duplicate_is_suppressed() {
+        let mut cache = CursorShapeCache::new();
+        let shape = make_shape(32, 32, 0, 0, 0);
+        assert!(cache.is_new(&shape));
+        assert!(!cache.is_new(&shape), "same shape must be suppressed on second call");
+    }
+
+    #[test]
+    fn cursor_shape_cache_different_pixels_is_new() {
+        let mut cache = CursorShapeCache::new();
+        let a = make_shape(32, 32, 0, 0, 0x00);
+        let b = make_shape(32, 32, 0, 0, 0xFF);
+        assert!(cache.is_new(&a));
+        assert!(cache.is_new(&b), "different pixels must produce a new entry");
+    }
+
+    #[test]
+    fn cursor_shape_cache_different_hotspot_is_new() {
+        let mut cache = CursorShapeCache::new();
+        let a = make_shape(16, 16, 0, 0, 0xAB);
+        let b = make_shape(16, 16, 8, 0, 0xAB);
+        assert!(cache.is_new(&a));
+        assert!(cache.is_new(&b), "different hotspot must produce a new entry");
+    }
+
+    #[test]
+    fn cursor_shape_cache_accumulates_multiple_shapes() {
+        let mut cache = CursorShapeCache::new();
+        for fill in 0u8..8 {
+            let s = make_shape(8, 8, 0, 0, fill);
+            assert!(cache.is_new(&s), "shape {fill} must be new on first insertion");
+            assert!(!cache.is_new(&s), "shape {fill} must be suppressed on repeat");
         }
     }
 }

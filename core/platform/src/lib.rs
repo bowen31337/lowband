@@ -104,7 +104,7 @@ pub use mic_capture::{
     MicCaptureBroker, MicCaptureError, MicFrame,
     MIC_CHANNELS, MIC_FRAME_MS, MIC_FRAME_SAMPLES, MIC_SAMPLE_RATE,
 };
-pub use screen_capture::{CaptureError, CaptureFrame, DirtyRect, ScreenCaptureBroker};
+pub use screen_capture::{CaptureError, CaptureFrame, CursorShape, DirtyRect, ScreenCaptureBroker};
 pub use gear_policy::{
     allocate, gear_b_preset_from_cpu_pct, select_resolution, Av1EncodeCapability, CameraGear,
     DisplayResolution, GearConstraints, StreamBudgets, AUDIO_FLOOR_BPS,
