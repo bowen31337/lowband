@@ -2,6 +2,7 @@
 //!
 //! | Feature | Description |
 //! |---------|-------------|
+//! | 44  | Mic capture: captures microphone audio at 48 kHz with sample_rate feeding the encode pipeline |
 //! | 46  | Noise suppressor: RNNoise-class neural filtering with noise_suppression at ~0.1% CPU |
 //! | 47  | AGC: applies automatic gain control ahead of detection with voice_activity gating |
 //! | 51  | LBRR FEC: recovers isolated audio losses in-band with lbrr_fec redundancy |
@@ -38,6 +39,7 @@
 
 pub mod agc;
 pub mod cpu_ceiling;
+pub mod mic_capture;
 pub mod cpu_telemetry;
 pub mod denoise_prefilter;
 pub mod dred_sender;
@@ -97,6 +99,10 @@ pub use intra_refresh::{IntraRefreshFrame, IntraRefreshState};
 pub use temporal_svc::{
     TemporalLayerAssigner, TemporalLayerId, TemporalSvcController, TemporalSvcMode,
     OVERUSE_ESCALATE_TICKS, UNDERUSE_RELAX_TICKS, T0, T1, T2,
+};
+pub use mic_capture::{
+    MicCaptureBroker, MicCaptureError, MicFrame,
+    MIC_CHANNELS, MIC_FRAME_MS, MIC_FRAME_SAMPLES, MIC_SAMPLE_RATE,
 };
 pub use screen_capture::{CaptureError, CaptureFrame, DirtyRect, ScreenCaptureBroker};
 pub use gear_policy::{
