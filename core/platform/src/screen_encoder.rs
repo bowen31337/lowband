@@ -325,6 +325,177 @@ impl Default for RefinementQueue {
     }
 }
 
+// ── TileRect ──────────────────────────────────────────────────────────────────
+
+/// Axis-aligned bounding rectangle expressed in tile coordinates.
+///
+/// Used by [`VideoSubStream`] to describe the union of all VIDEO-classified
+/// tile positions that need a Gear-B AV1 encode this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileRect {
+    /// Left-most tile column (inclusive).
+    pub col_min: u32,
+    /// Top-most tile row (inclusive).
+    pub row_min: u32,
+    /// Right-most tile column (inclusive).
+    pub col_max: u32,
+    /// Bottom-most tile row (inclusive).
+    pub row_max: u32,
+}
+
+impl TileRect {
+    /// Width in tiles.
+    #[inline]
+    pub fn cols(&self) -> u32 {
+        self.col_max - self.col_min + 1
+    }
+
+    /// Height in tiles.
+    #[inline]
+    pub fn rows(&self) -> u32 {
+        self.row_max - self.row_min + 1
+    }
+
+    /// Pixel-accurate left edge of the rectangle.
+    #[inline]
+    pub fn x_px(&self) -> u32 {
+        self.col_min * TILE_SIZE_PX
+    }
+
+    /// Pixel-accurate top edge of the rectangle.
+    #[inline]
+    pub fn y_px(&self) -> u32 {
+        self.row_min * TILE_SIZE_PX
+    }
+
+    /// Pixel-accurate width of the rectangle.
+    #[inline]
+    pub fn width_px(&self) -> u32 {
+        self.cols() * TILE_SIZE_PX
+    }
+
+    /// Pixel-accurate height of the rectangle.
+    #[inline]
+    pub fn height_px(&self) -> u32 {
+        self.rows() * TILE_SIZE_PX
+    }
+}
+
+// ── VideoSubStream ────────────────────────────────────────────────────────────
+
+/// Gear-B AV1 sub-stream isolator for VIDEO-classified tiles (Feature 96).
+///
+/// VIDEO tiles (> [`VIDEO_COLOR_LIMIT`] distinct colours, or high-motion
+/// regions) are excluded from the two-pass encode pipeline entirely.  They are
+/// instead confined here: each call to [`push`] extends a single bounding
+/// [`TileRect`] that the caller submits to a dedicated SVT-AV1 Gear-B encode.
+///
+/// The sub-stream is isolated from the [`RefinementQueue`] — VIDEO tiles never
+/// enter the lossless-refinement path and do not compete with text and UI tiles
+/// for idle bandwidth.
+///
+/// # Usage
+///
+/// After classifying each dirty tile:
+///
+/// 1. If `tile_class == TileClass::Video`, call `video_sub_stream.push(coord)`.
+/// 2. All other classes enter the two-pass pipeline as normal.
+/// 3. At frame-submission time, call `video_sub_stream.take_dirty_region()`.
+///    If `Some(rect)` is returned, submit `rect` (in pixels: see [`TileRect`])
+///    to the Gear-B SVT-AV1 encoder; the dirty flag is cleared.
+///
+/// [`push`]: Self::push
+/// [`take_dirty_region`]: Self::take_dirty_region
+pub struct VideoSubStream {
+    /// Bounding rect of all registered VIDEO tiles, or `None` when no tiles
+    /// have been pushed since the last reset.
+    region: Option<TileRect>,
+    /// `true` when at least one [`push`] has been called since the last
+    /// [`take_dirty_region`].
+    dirty: bool,
+}
+
+impl VideoSubStream {
+    /// Create an empty sub-stream with no registered tiles.
+    pub fn new() -> Self {
+        Self { region: None, dirty: false }
+    }
+
+    /// Register a VIDEO tile at `coord`.
+    ///
+    /// Extends the bounding [`TileRect`] to include `coord` and marks the
+    /// sub-stream dirty so that the next call to [`take_dirty_region`] returns
+    /// the updated region.
+    ///
+    /// [`take_dirty_region`]: Self::take_dirty_region
+    pub fn push(&mut self, coord: TileCoord) {
+        self.dirty = true;
+        match self.region {
+            None => {
+                self.region = Some(TileRect {
+                    col_min: coord.col,
+                    row_min: coord.row,
+                    col_max: coord.col,
+                    row_max: coord.row,
+                });
+            }
+            Some(ref mut r) => {
+                r.col_min = r.col_min.min(coord.col);
+                r.row_min = r.row_min.min(coord.row);
+                r.col_max = r.col_max.max(coord.col);
+                r.row_max = r.row_max.max(coord.row);
+            }
+        }
+    }
+
+    /// Return the bounding rect of all registered VIDEO tiles and clear the
+    /// dirty flag.
+    ///
+    /// Returns `Some(rect)` exactly once after one or more [`push`] calls.
+    /// Returns `None` when nothing has changed since the last call.
+    ///
+    /// The caller is responsible for submitting the returned rect to the Gear-B
+    /// SVT-AV1 encoder as the capture/encode region for this frame.
+    ///
+    /// [`push`]: Self::push
+    pub fn take_dirty_region(&mut self) -> Option<TileRect> {
+        if self.dirty {
+            self.dirty = false;
+            self.region
+        } else {
+            None
+        }
+    }
+
+    /// `true` when at least one [`push`] has been called since the last
+    /// [`take_dirty_region`].
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// `true` when no VIDEO tiles have been registered yet (i.e. no [`push`]
+    /// calls since construction or the last [`reset`]).
+    ///
+    /// [`reset`]: Self::reset
+    pub fn is_empty(&self) -> bool {
+        self.region.is_none()
+    }
+
+    /// Discard all registered tiles and clear the dirty flag.
+    ///
+    /// Call on scene cuts or when the video region disappears entirely.
+    pub fn reset(&mut self) {
+        self.region = None;
+        self.dirty = false;
+    }
+}
+
+impl Default for VideoSubStream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

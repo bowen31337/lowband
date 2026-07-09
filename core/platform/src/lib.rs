@@ -120,7 +120,7 @@ pub use mic_capture::{
 };
 pub use screen_capture::{CaptureError, CaptureFrame, CursorShape, DirtyRect, ScreenCaptureBroker};
 pub use screen_encoder::{
-    classify_tile, RefinementQueue, TileClass, TileCoord,
+    classify_tile, RefinementQueue, TileClass, TileCoord, TileRect, VideoSubStream,
     LOSSLESS_BYTES_PER_PICTURE_TILE, PALETTE_COLOR_LIMIT, PIXEL_EXACT_DEADLINE_MS,
     TILE_BYTES, TILE_SIZE_PX, VIDEO_COLOR_LIMIT,
 };
