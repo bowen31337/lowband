@@ -4,6 +4,7 @@
 //! |---------|-------------|
 //! | 33  | User can export the audit_log, which saves to a tamper-evident json file |
 //! | 139 | UI shows a TCP-443 relay warning with an honest latency penalty label |
+//! | 140 | User can join a session with session_code entry and no account |
 //! | 141 | UI displays one obvious consent screen before any capability is granted |
 //! | 142 | UI shows a persistent indicator whenever a capability is live on the assisted machine |
 //! | 143 | User can grant view access with view_grant but withhold control on the consent screen |
@@ -39,7 +40,10 @@ pub use consent_screen::{
     DENY_LABEL,
 };
 pub use gear_badge::{BadgeState, GearBadge, BADGE_COLOR, BADGE_LABEL};
-pub use join_screen::{CodeError, ConnectError, JoinScreen, JoinState};
+pub use join_screen::{
+    CodeError, ConnectError, JoinScreen, JoinState,
+    CODE_INPUT_PLACEHOLDER, JOIN_BUTTON_LABEL,
+};
 pub use panic_control::{
     PanicControl, PanicControlState,
     PANIC_BUTTON_COLOR, PANIC_BUTTON_LABEL,

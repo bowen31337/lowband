@@ -1,17 +1,23 @@
-//! Join-by-code screen shown to the assisted user — Features 148 and 149.
+//! Join-by-code screen shown to the assisted user — Features 140, 148, and 149.
 //!
 //! The assisted user (Ana) is handed a 9-digit code out-of-band (phone call,
-//! SMS, ticket).  She types it once and presses **Join**.  The daemon handles
-//! all network connectivity: ICE gathering, NAT traversal, TURN relay selection,
-//! and Noise-IK handshake.  The UI shell asks for nothing networking-related.
+//! SMS, ticket).  She types it once and presses **Join**.  No account, login,
+//! or registration is required at any point.  The daemon handles all network
+//! connectivity: ICE gathering, NAT traversal, TURN relay selection, and
+//! Noise-IK handshake.  The UI shell asks for nothing networking-related.
+//!
+//! # No-account join (Feature 140)
+//!
+//! [`JoinScreen`] accepts exactly one user input — the 9-digit `session_code`
+//! provided by the expert out-of-band.  No username, password, email, or
+//! account of any kind is required or accepted.  The type system enforces this:
+//! [`connect`](JoinScreen::connect) takes no authentication arguments.
 //!
 //! # Zero-networking-questions invariant (Feature 149)
 //!
-//! [`JoinScreen`] has exactly one input field — `session_code` — and exposes
-//! no server address, port, protocol, proxy, relay, or STUN/TURN configuration
-//! to the user.  The [`connect`](JoinScreen::connect) method requires only that
-//! a valid code was entered; the daemon resolves all connectivity details from
-//! the code and the ambient environment.
+//! [`JoinScreen`] exposes no server address, port, protocol, proxy, relay, or
+//! STUN/TURN configuration to the user.  The daemon resolves all connectivity
+//! details from the code and the ambient environment.
 //!
 //! # time_to_connected measurement (Feature 148)
 //!
@@ -51,6 +57,12 @@
 //! assert_eq!(screen.state(), JoinState::Connected);
 //! assert!(screen.time_to_connected_ms().is_some());
 //! ```
+
+/// Placeholder text for the session-code input field (Feature 140).
+pub const CODE_INPUT_PLACEHOLDER: &str = "000 000 000";
+
+/// Label for the primary join button (Feature 140).
+pub const JOIN_BUTTON_LABEL: &str = "Join";
 
 /// Errors returned by [`JoinScreen::set_code`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -533,5 +545,48 @@ mod tests {
             None,
             "time_to_connected_ms must be None while reconnecting"
         );
+    }
+
+    // ── No-account join invariant (Feature 140) ───────────────────────────────
+
+    #[test]
+    fn connect_requires_no_account_credentials() {
+        // connect() accepts zero authentication arguments — no username, password,
+        // email, or token.  If this compiles, the no-account invariant holds at
+        // the type level.
+        let mut screen = JoinScreen::new();
+        screen.set_code("123456789").unwrap();
+        let _code = screen.connect().unwrap();
+        assert_eq!(screen.state(), JoinState::Connecting);
+    }
+
+    #[test]
+    fn join_screen_has_no_auth_or_account_fields() {
+        // JoinScreen::new() takes no credentials and exposes no auth accessor.
+        // The only user-facing input accessor is session_code().
+        let screen = JoinScreen::new();
+        let _ = screen.session_code(); // only accessor that compiles
+        // session_code is None until set — no default login is pre-filled.
+        assert_eq!(screen.session_code(), None);
+    }
+
+    #[test]
+    fn join_screen_starts_fresh_with_no_stored_identity() {
+        // A newly constructed JoinScreen holds no pre-loaded identity or session;
+        // it is idle and anonymous until the user manually enters a code.
+        let screen = JoinScreen::new();
+        assert_eq!(screen.state(), JoinState::Idle);
+        assert_eq!(screen.session_code(), None);
+        assert_eq!(screen.time_to_connected_ms(), None);
+    }
+
+    #[test]
+    fn code_input_placeholder_is_defined() {
+        assert_eq!(CODE_INPUT_PLACEHOLDER, "000 000 000");
+    }
+
+    #[test]
+    fn join_button_label_is_defined() {
+        assert_eq!(JOIN_BUTTON_LABEL, "Join");
     }
 }
