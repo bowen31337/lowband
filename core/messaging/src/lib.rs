@@ -32,5 +32,5 @@ pub use grants::{
     FileGrant, FileSession,
     ViewGrant, ViewSession,
 };
-pub use panic_key::{PanicController, PanicEffect};
+pub use panic_key::{PanicController, PanicEffect, PANIC_INJECTION_BLOCK_DEADLINE_MS};
 pub use session_records::{SessionRecord, SessionRecordStore, Tier};

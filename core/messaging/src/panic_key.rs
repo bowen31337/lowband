@@ -49,6 +49,14 @@
 
 use crate::grants::ControlSession;
 
+/// Maximum time (milliseconds) from panic-key press to the first rejected
+/// injection event — Feature 29 SLA.
+///
+/// `fire_panic` is synchronous: the control grant is revoked in the same call,
+/// so the actual latency is sub-microsecond.  The constant lets bench tests
+/// gate the SLA without hard-coding the number in multiple places.
+pub const PANIC_INJECTION_BLOCK_DEADLINE_MS: u64 = 50;
+
 /// Returned by [`PanicController::fire_panic`]; describes what the panic
 /// activation changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
