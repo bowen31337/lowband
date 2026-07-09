@@ -10,11 +10,13 @@
 //! | 143 | System creates separate view, control, file, and clipboard capability_token grants on explicit consent |
 //! | 153 | System validates every injected input event with capability_token checks before delivery |
 //! | 171 | System persists signed entries to the audit_log covering identity keys, grants, and timestamps |
+//! | 32  | System persists session metadata to the session_records store for later export |
 
 pub mod audit;
 pub mod chat;
 pub mod clipboard;
 pub mod grants;
+pub mod session_records;
 
 pub use audit::{AuditEntry, AuditLog};
 pub use chat::{ChatError, ChatMessage, ChatSession, CHAT_MAX_TEXT_BYTES, SURVIVAL_TIER_BPS};
@@ -29,3 +31,4 @@ pub use grants::{
     FileGrant, FileSession,
     ViewGrant, ViewSession,
 };
+pub use session_records::{SessionRecord, SessionRecordStore, Tier};
