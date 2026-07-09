@@ -227,6 +227,73 @@ async fn post_candidate_bad_code_returns_404() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
+// ── POST /signal/connected ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn post_connected_drops_session_from_path() {
+    let app = make_app();
+    // Create a session.
+    let resp = app
+        .clone()
+        .oneshot(Request::builder().method("POST").uri("/signal/session").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let code = collect_json(resp.into_body()).await["session_code"].as_str().unwrap().to_string();
+
+    // Signal that peers connected directly — service must drop the session.
+    let resp2 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/signal/connected")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(json_body(serde_json::json!({ "session_code": code })))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), StatusCode::OK);
+
+    // Session must now be gone — any further signaling returns 404.
+    let resp3 = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/signal/join/{code}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp3.status(), StatusCode::NOT_FOUND, "session must be evicted after /connected");
+}
+
+#[tokio::test]
+async fn service_has_no_media_relay_endpoint() {
+    // The signaling service must never forward media.  Any request to a
+    // media-path URI must be rejected (404 from the router, not a relay).
+    let app = make_app();
+    for uri in &["/signal/media", "/media", "/relay"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(*uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "media relay endpoint {uri} must not exist"
+        );
+    }
+}
+
 // ── POST /signal/turn ─────────────────────────────────────────────────────────
 
 #[tokio::test]

@@ -90,6 +90,7 @@ pub fn router(state: AppState) -> Router {
         .route("/signal/answer", post(post_answer))
         .route("/signal/candidate", post(post_candidate))
         .route("/signal/turn", post(post_turn))
+        .route("/signal/connected", post(post_connected))
         .with_state(state)
 }
 
@@ -165,6 +166,17 @@ fn check_code(st: &AppState, code: &str) -> Result<(), StatusCode> {
         },
         None => Err(StatusCode::NOT_FOUND),
     }
+}
+
+// Called by either peer once a direct LBTP connection is established.
+// Evicts the session so the signaling service is no longer in the path.
+async fn post_connected(
+    State(st): State<AppState>,
+    Json(b): Json<CodedBody>,
+) -> Result<StatusCode, StatusCode> {
+    check_code(&st, &b.session_code)?;
+    st.session_codes.remove(b.session_code.as_bytes()).ok();
+    Ok(StatusCode::OK)
 }
 
 #[derive(Serialize)]
