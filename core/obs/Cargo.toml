@@ -6,3 +6,4 @@ description = "LowBand observability — opt-in aggregate QoS telemetry (no medi
 
 [dependencies]
 lowband-messaging = { path = "../messaging" }
+lowband-platform  = { path = "../platform", default-features = false }

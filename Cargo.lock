@@ -585,6 +585,7 @@ name = "lowband-obs"
 version = "0.1.0"
 dependencies = [
  "lowband-messaging",
+ "lowband-platform",
 ]
 
 [[package]]
