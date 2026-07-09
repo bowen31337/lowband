@@ -127,7 +127,7 @@ pub use mic_capture::{
 };
 pub use screen_capture::{CaptureError, CaptureFrame, CursorShape, DirtyRect, ScreenCaptureBroker};
 pub use screen_encoder::{
-    classify_tile, RefinementQueue, TileClass, TileCoord, TileRect, VideoSubStream,
+    classify_tile, RefinementQueue, TileClass, TileCoord, TileGrid, TileRect, VideoSubStream,
     EntropyPaletteDecoder, EntropyPaletteEncoder,
     PaletteDecodeError, PaletteEncodeError, PaletteTileDecoder, PaletteTileEncoder,
     LOSSLESS_BYTES_PER_PICTURE_TILE, PALETTE_COLOR_LIMIT, PIXEL_EXACT_DEADLINE_MS,

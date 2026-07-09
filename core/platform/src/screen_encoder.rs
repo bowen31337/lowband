@@ -244,6 +244,126 @@ pub struct TileCoord {
     pub row: u32,
 }
 
+// ── TileGrid ──────────────────────────────────────────────────────────────────
+
+/// Tile grid for a captured frame (Feature 91).
+///
+/// Maps a frame of `frame_width × frame_height` pixels onto a grid of 32×32
+/// tiles.  The rightmost column and bottom row may be partial tiles when the
+/// frame dimensions are not exact multiples of [`TILE_SIZE_PX`].
+///
+/// # Usage
+///
+/// ```ignore
+/// let grid = TileGrid::new(1920, 1080);
+/// for dirty_rect in frame.dirty_rects {
+///     for coord in grid.tiles_for_rect(dirty_rect) {
+///         let tile_px = grid.extract_tile(&frame.pixels, frame.stride, coord);
+///         let class   = classify_tile(&tile_px);
+///         // … route to coarse-pass encoder …
+///     }
+/// }
+/// ```
+pub struct TileGrid {
+    /// Number of tile columns: `ceil(frame_width / TILE_SIZE_PX)`.
+    pub cols: u32,
+    /// Number of tile rows: `ceil(frame_height / TILE_SIZE_PX)`.
+    pub rows: u32,
+    frame_width:  u32,
+    frame_height: u32,
+}
+
+impl TileGrid {
+    /// Construct a tile grid for a frame of the given pixel dimensions.
+    pub fn new(frame_width: u32, frame_height: u32) -> Self {
+        let cols = frame_width.div_ceil(TILE_SIZE_PX);
+        let rows = frame_height.div_ceil(TILE_SIZE_PX);
+        Self { cols, rows, frame_width, frame_height }
+    }
+
+    /// Return all tile coordinates that overlap the given damage rectangle.
+    ///
+    /// `rect` is a damage region in frame coordinates.  Negative `x`/`y`
+    /// values are clamped to zero; regions outside the frame are clipped.
+    ///
+    /// The returned coordinates are in raster order (row-major, left-to-right
+    /// within each row, top-to-bottom across rows).
+    pub fn tiles_for_rect(&self, rect: crate::screen_capture::DirtyRect) -> Vec<TileCoord> {
+        let x0 = rect.x.max(0) as u32;
+        let y0 = rect.y.max(0) as u32;
+        let x1 = (rect.x.saturating_add(rect.width as i32)).max(0) as u32;
+        let y1 = (rect.y.saturating_add(rect.height as i32)).max(0) as u32;
+
+        let x1 = x1.min(self.frame_width);
+        let y1 = y1.min(self.frame_height);
+
+        if x1 <= x0 || y1 <= y0 {
+            return Vec::new();
+        }
+
+        let col_min = x0 / TILE_SIZE_PX;
+        let col_max = (x1 - 1) / TILE_SIZE_PX;
+        let row_min = y0 / TILE_SIZE_PX;
+        let row_max = (y1 - 1) / TILE_SIZE_PX;
+
+        let capacity = ((col_max - col_min + 1) * (row_max - row_min + 1)) as usize;
+        let mut tiles = Vec::with_capacity(capacity);
+        for row in row_min..=row_max {
+            for col in col_min..=col_max {
+                tiles.push(TileCoord { col, row });
+            }
+        }
+        tiles
+    }
+
+    /// Extract BGRA8 pixel data for a single tile from the frame buffer.
+    ///
+    /// `pixels` is the raw frame pixel data in BGRA8 format.  `stride` is the
+    /// row stride in bytes (may exceed `frame_width × 4` due to alignment
+    /// padding).
+    ///
+    /// The returned array is exactly [`TILE_BYTES`] bytes.  Pixels that fall
+    /// outside the frame boundary (partial tiles at the right or bottom edge)
+    /// are filled with `0x00`.
+    pub fn extract_tile(
+        &self,
+        pixels: &[u8],
+        stride: u32,
+        coord:  TileCoord,
+    ) -> [u8; TILE_BYTES] {
+        let mut tile = [0u8; TILE_BYTES];
+        let tile_x = coord.col * TILE_SIZE_PX;
+        let tile_y = coord.row * TILE_SIZE_PX;
+
+        for row in 0..TILE_SIZE_PX {
+            let src_y = tile_y + row;
+            if src_y >= self.frame_height {
+                break;
+            }
+            let src_row = (src_y * stride) as usize;
+            let dst_row = (row  * TILE_SIZE_PX * 4) as usize;
+
+            for col in 0..TILE_SIZE_PX {
+                let src_x = tile_x + col;
+                if src_x >= self.frame_width {
+                    break;
+                }
+                let src_off = src_row + (src_x * 4) as usize;
+                let dst_off = dst_row + (col  * 4) as usize;
+                tile[dst_off..dst_off + 4].copy_from_slice(&pixels[src_off..src_off + 4]);
+            }
+        }
+
+        tile
+    }
+
+    /// Total number of tiles in the grid (`cols × rows`).
+    #[inline]
+    pub fn tile_count(&self) -> u32 {
+        self.cols * self.rows
+    }
+}
+
 // ── RefinementQueue ───────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1403,5 +1523,213 @@ mod tests {
         assert_eq!(q.pop().unwrap().0, a, "oldest tile must come out first");
         assert_eq!(q.pop().unwrap().0, b);
         assert_eq!(q.pop().unwrap().0, c);
+    }
+
+    // ── TileGrid ──────────────────────────────────────────────────────────────
+
+    use crate::screen_capture::DirtyRect;
+
+    fn dirty(x: i32, y: i32, width: u32, height: u32) -> DirtyRect {
+        DirtyRect { x, y, width, height }
+    }
+
+    #[test]
+    fn tile_grid_dimensions_for_848x480() {
+        let grid = TileGrid::new(848, 480);
+        assert_eq!(grid.cols, 27, "ceil(848/32) = 27");
+        assert_eq!(grid.rows, 15, "ceil(480/32) = 15");
+        assert_eq!(grid.tile_count(), 405);
+    }
+
+    #[test]
+    fn tile_grid_exact_multiple_of_tile_size() {
+        let grid = TileGrid::new(128, 64);
+        assert_eq!(grid.cols, 4, "128/32 = 4");
+        assert_eq!(grid.rows, 2, "64/32 = 2");
+        assert_eq!(grid.tile_count(), 8);
+    }
+
+    #[test]
+    fn tiles_for_rect_single_tile_aligned() {
+        let grid = TileGrid::new(256, 256);
+        // Rect exactly at tile (1, 2): x=32, y=64, 32×32
+        let tiles = grid.tiles_for_rect(dirty(32, 64, 32, 32));
+        assert_eq!(tiles, vec![TileCoord { col: 1, row: 2 }]);
+    }
+
+    #[test]
+    fn tiles_for_rect_spans_two_columns() {
+        let grid = TileGrid::new(256, 256);
+        // Rect from x=16 to x=48 (width=32): crosses cols 0 and 1 at row 0.
+        let tiles = grid.tiles_for_rect(dirty(16, 0, 32, 32));
+        assert_eq!(tiles, vec![
+            TileCoord { col: 0, row: 0 },
+            TileCoord { col: 1, row: 0 },
+        ]);
+    }
+
+    #[test]
+    fn tiles_for_rect_2x2_grid_of_tiles() {
+        let grid = TileGrid::new(256, 256);
+        // Rect from (16, 16) to (48, 48): a 32×32 window crossing a 2×2 tile block.
+        let tiles = grid.tiles_for_rect(dirty(16, 16, 32, 32));
+        assert_eq!(tiles, vec![
+            TileCoord { col: 0, row: 0 },
+            TileCoord { col: 1, row: 0 },
+            TileCoord { col: 0, row: 1 },
+            TileCoord { col: 1, row: 1 },
+        ]);
+    }
+
+    #[test]
+    fn tiles_for_rect_full_frame() {
+        let grid = TileGrid::new(64, 64);
+        let tiles = grid.tiles_for_rect(dirty(0, 0, 64, 64));
+        assert_eq!(tiles.len(), 4, "64×64 at tile_size=32 → 2×2 = 4 tiles");
+        assert!(tiles.contains(&TileCoord { col: 0, row: 0 }));
+        assert!(tiles.contains(&TileCoord { col: 1, row: 0 }));
+        assert!(tiles.contains(&TileCoord { col: 0, row: 1 }));
+        assert!(tiles.contains(&TileCoord { col: 1, row: 1 }));
+    }
+
+    #[test]
+    fn tiles_for_rect_clamps_to_frame_boundary() {
+        let grid = TileGrid::new(64, 64);
+        // Rect that extends beyond the frame.
+        let tiles = grid.tiles_for_rect(dirty(48, 48, 64, 64));
+        // Only tile (1, 1) is within the 2×2 grid.
+        assert_eq!(tiles, vec![TileCoord { col: 1, row: 1 }]);
+    }
+
+    #[test]
+    fn tiles_for_rect_empty_when_out_of_frame() {
+        let grid = TileGrid::new(64, 64);
+        // Rect entirely outside the frame.
+        let tiles = grid.tiles_for_rect(dirty(200, 200, 32, 32));
+        assert!(tiles.is_empty(), "rect outside frame must yield no tiles");
+    }
+
+    #[test]
+    fn tiles_for_rect_negative_origin_clamped() {
+        let grid = TileGrid::new(64, 64);
+        // Rect starts at (-16, -16) with size 48×48 — effective area is (0,0)→(32,32).
+        let tiles = grid.tiles_for_rect(dirty(-16, -16, 48, 48));
+        assert_eq!(tiles, vec![TileCoord { col: 0, row: 0 }]);
+    }
+
+    #[test]
+    fn tiles_for_rect_raster_order() {
+        let grid = TileGrid::new(96, 96);
+        let tiles = grid.tiles_for_rect(dirty(0, 0, 96, 96));
+        // 3×3 grid; tiles must be in row-major order.
+        assert_eq!(tiles[0], TileCoord { col: 0, row: 0 });
+        assert_eq!(tiles[1], TileCoord { col: 1, row: 0 });
+        assert_eq!(tiles[2], TileCoord { col: 2, row: 0 });
+        assert_eq!(tiles[3], TileCoord { col: 0, row: 1 });
+        assert_eq!(tiles.len(), 9);
+    }
+
+    #[test]
+    fn extract_tile_copies_pixels_from_frame() {
+        // 64×64 frame, two tiles wide and two tiles tall.
+        let stride = 64 * 4u32;
+        let mut pixels = vec![0u8; (stride * 64) as usize];
+        // Fill tile (1, 1) (x=32..64, y=32..64) with a distinctive pattern.
+        for y in 32u32..64 {
+            for x in 32u32..64 {
+                let off = (y * stride + x * 4) as usize;
+                pixels[off]     = 0xAA; // B
+                pixels[off + 1] = 0xBB; // G
+                pixels[off + 2] = 0xCC; // R
+                pixels[off + 3] = 0xFF; // A
+            }
+        }
+
+        let grid = TileGrid::new(64, 64);
+        let tile = grid.extract_tile(&pixels, stride, TileCoord { col: 1, row: 1 });
+        assert_eq!(tile.len(), TILE_BYTES);
+
+        // All 1024 pixels in the extracted tile must carry the fill value.
+        for chunk in tile.chunks_exact(4) {
+            assert_eq!(chunk[0], 0xAA, "B channel mismatch");
+            assert_eq!(chunk[1], 0xBB, "G channel mismatch");
+            assert_eq!(chunk[2], 0xCC, "R channel mismatch");
+            assert_eq!(chunk[3], 0xFF, "A channel mismatch");
+        }
+    }
+
+    #[test]
+    fn extract_tile_partial_at_right_edge_zeroes_out_of_bounds() {
+        // 48×32 frame: the right column tile (col=1) is only 16 px wide.
+        let stride = 48 * 4u32;
+        let pixels = vec![0xFFu8; (stride * 32) as usize];
+        let grid = TileGrid::new(48, 32);
+        let tile = grid.extract_tile(&pixels, stride, TileCoord { col: 1, row: 0 });
+
+        // Columns 0..16 (px 0..16 within the tile) come from the frame.
+        for row in 0..32usize {
+            for col in 0..32usize {
+                let off = row * 32 * 4 + col * 4;
+                if col < 16 {
+                    assert_eq!(tile[off], 0xFF, "in-bounds pixel must be copied");
+                } else {
+                    assert_eq!(tile[off], 0x00, "out-of-bounds pixel must be zeroed");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn extract_tile_partial_at_bottom_edge_zeroes_out_of_bounds() {
+        // 32×48 frame: the bottom row tile (row=1) is only 16 px tall.
+        let stride = 32 * 4u32;
+        let pixels = vec![0xFFu8; (stride * 48) as usize];
+        let grid = TileGrid::new(32, 48);
+        let tile = grid.extract_tile(&pixels, stride, TileCoord { col: 0, row: 1 });
+
+        for row in 0..32usize {
+            let off = row * 32 * 4;
+            if row < 16 {
+                assert_eq!(tile[off], 0xFF, "in-bounds row must be copied");
+            } else {
+                assert_eq!(tile[off], 0x00, "out-of-bounds row must be zeroed");
+            }
+        }
+    }
+
+    #[test]
+    fn extract_tile_respects_stride_padding() {
+        // 32×32 frame; stride = 128 + 16 = 144 (16 bytes of row padding after active pixels).
+        let stride = 144u32;
+        let mut pixels = vec![0x00u8; (stride * 32) as usize];
+        // Fill the 32-pixel-wide active area with 0xAB.
+        for y in 0..32u32 {
+            for x in 0..32u32 {
+                let off = (y * stride + x * 4) as usize;
+                pixels[off..off + 4].copy_from_slice(&[0xAB, 0xCD, 0xEF, 0xFF]);
+            }
+        }
+        let grid = TileGrid::new(32, 32);
+        let tile = grid.extract_tile(&pixels, stride, TileCoord { col: 0, row: 0 });
+        for chunk in tile.chunks_exact(4) {
+            assert_eq!(chunk[0], 0xAB, "stride padding must not bleed into tile data");
+        }
+    }
+
+    #[test]
+    fn tile_grid_pixel_to_coord_mapping() {
+        // Every pixel in an 848×480 frame must map into valid tile coords.
+        let grid = TileGrid::new(848, 480);
+        for y in 0u32..480 {
+            for x in 0u32..848 {
+                let col = x / TILE_SIZE_PX;
+                let row = y / TILE_SIZE_PX;
+                assert!(
+                    col < grid.cols && row < grid.rows,
+                    "pixel ({x},{y}) → tile ({col},{row}) is outside grid {}×{}",
+                    grid.cols, grid.rows
+                );
+            }
+        }
     }
 }
