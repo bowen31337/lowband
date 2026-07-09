@@ -33,6 +33,7 @@ const TURN_TTL_SECS: u64 = 86_400;
 #[derive(Clone)]
 pub struct AppState {
     session_codes: sled::Tree,
+    ice_candidates: sled::Tree,
     turn_urls: Arc<Vec<String>>,
     turn_secret: Arc<String>,
 }
@@ -44,7 +45,7 @@ impl Default for AppState {
 }
 
 impl AppState {
-    /// Creates a temporary in-memory session_codes store (used by tests).
+    /// Creates a temporary in-memory store (used by tests).
     pub fn new() -> Self {
         let db = sled::Config::new()
             .temporary(true)
@@ -52,19 +53,31 @@ impl AppState {
             .expect("in-memory sled failed");
         Self {
             session_codes: db.open_tree("session_codes").expect("open tree"),
+            ice_candidates: db.open_tree("ice_candidates").expect("open tree"),
             turn_urls: Arc::new(vec!["turn:turn.example.com:3478".into()]),
             turn_secret: Arc::new("test-secret".into()),
         }
     }
 
-    /// Opens (or creates) a file-backed session_codes store at `path`.
+    /// Opens (or creates) a file-backed store at `path`.
     pub fn open(path: &str, turn_urls: Vec<String>, turn_secret: String) -> sled::Result<Self> {
         let db = sled::open(path)?;
         Ok(Self {
             session_codes: db.open_tree("session_codes")?,
+            ice_candidates: db.open_tree("ice_candidates")?,
             turn_urls: Arc::new(turn_urls),
             turn_secret: Arc::new(turn_secret),
         })
+    }
+
+    /// Returns all pending ICE candidates for `session_code` in insertion order.
+    pub fn pending_candidates(&self, session_code: &str) -> Vec<String> {
+        let prefix = format!("{session_code}:");
+        self.ice_candidates
+            .scan_prefix(prefix.as_bytes())
+            .filter_map(|r| r.ok())
+            .filter_map(|(_, v)| String::from_utf8(v.to_vec()).ok())
+            .collect()
     }
 }
 
@@ -83,6 +96,7 @@ fn decode_expires_at(bytes: &[u8]) -> Option<i64> {
 // ── Session code generation ────────────────────────────────────────────────────
 
 static CODE_SEQ: AtomicU64 = AtomicU64::new(100_000_000);
+static CAND_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn gen_code() -> String {
     format!("{:09}", CODE_SEQ.fetch_add(1, Ordering::Relaxed) % 1_000_000_000)
@@ -142,10 +156,16 @@ async fn get_join(
     }
 }
 
-// Shared body shape for offer / answer / candidate — any extra fields are ignored.
+// Shared body shape for offer / answer — any extra fields are ignored.
 #[derive(Deserialize)]
 struct CodedBody {
     session_code: String,
+}
+
+#[derive(Deserialize)]
+struct CandidateBody {
+    session_code: String,
+    candidate: String,
 }
 
 async fn post_offer(
@@ -166,9 +186,14 @@ async fn post_answer(
 
 async fn post_candidate(
     State(st): State<AppState>,
-    Json(b): Json<CodedBody>,
+    Json(b): Json<CandidateBody>,
 ) -> Result<StatusCode, StatusCode> {
     check_code(&st, &b.session_code)?;
+    let seq = CAND_SEQ.fetch_add(1, Ordering::Relaxed);
+    let key = format!("{}:{:016x}", b.session_code, seq);
+    st.ice_candidates
+        .insert(key.as_bytes(), b.candidate.as_bytes())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::ACCEPTED)
 }
 
