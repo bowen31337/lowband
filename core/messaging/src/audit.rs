@@ -6,11 +6,16 @@
 //! Verifying the chain is O(n) via [`AuditLog::verify`] or the static
 //! [`AuditLog::verify_entries`] (useful for externally-loaded export slices).
 //!
+//! The signed payload covers identity keys, capability grants, and timestamps
+//! so that any post-write tampering with any of these fields is detectable.
+//!
 //! # Signing scheme
 //!
 //! ```text
 //! sig[0]   = KH(key, chain_hash[init=0] || len(event_type) || event_type
-//!                    || len(capability) || capability || occurred_at_ms)
+//!                    || len(capability) || capability
+//!                    || identity_key_flag(1B) || [identity_key(32B) if present]
+//!                    || occurred_at_ms)
 //! chain[0] = KH(key_derived, sig[0])
 //! sig[n]   = KH(key, chain[n-1] || ...)
 //! chain[n] = KH(key_derived, sig[n])
@@ -28,8 +33,10 @@
 //! use lowband_messaging::audit::AuditLog;
 //!
 //! const KEY: [u8; 32] = *b"example-session-key-32-bytes-xyz";
+//! const PEER: [u8; 32] = [0x42u8; 32];
 //!
 //! let mut log = AuditLog::new(KEY);
+//! log.append_with_identity("identity_verified", None,            &PEER, 999);
 //! log.append("view_granted",    Some("view"),    1000);
 //! log.append("control_granted", Some("control"), 1001);
 //! log.append("session_ended",   None,            1002);
@@ -37,6 +44,7 @@
 //! assert!(log.verify());
 //! let json = log.export_json();
 //! assert!(json.contains("view_granted"));
+//! assert!(json.contains("identity_verified"));
 //! ```
 
 /// A single signed entry in the audit log.
@@ -46,6 +54,11 @@ pub struct AuditEntry {
     pub event_type: String,
     /// The capability the event relates to, if any (`"view"`, `"control"`, `"file"`, `"clipboard"`).
     pub capability: Option<String>,
+    /// Static public key of the peer identity involved in this event, if applicable.
+    ///
+    /// Included in the signed payload so that substituting a different identity
+    /// key breaks the signature.  Encoded as lowercase hex in the JSON export.
+    pub identity_key: Option<[u8; 32]>,
     /// Wall-clock milliseconds since the Unix epoch, supplied by the caller.
     pub occurred_at_ms: u64,
     /// 256-bit keyed-hash signature binding this entry to the key and the chain.
@@ -74,10 +87,39 @@ impl AuditLog {
     }
 
     /// Append a new signed entry and advance the chain hash.
+    ///
+    /// Use [`AuditLog::append_with_identity`] when the event involves a known
+    /// peer whose static public key should be committed into the signature.
     pub fn append(
         &mut self,
         event_type: &str,
         capability: Option<&str>,
+        occurred_at_ms: u64,
+    ) {
+        self.append_inner(event_type, capability, None, occurred_at_ms);
+    }
+
+    /// Append a signed entry that commits to a peer identity key.
+    ///
+    /// The 32-byte `identity_key` is folded into the signing payload so that
+    /// any post-write substitution of the key breaks the chain signature.  Use
+    /// this for events like `"identity_verified"` or `"peer_connected"` where
+    /// the remote peer's static public key is material to the audit record.
+    pub fn append_with_identity(
+        &mut self,
+        event_type: &str,
+        capability: Option<&str>,
+        identity_key: &[u8; 32],
+        occurred_at_ms: u64,
+    ) {
+        self.append_inner(event_type, capability, Some(identity_key), occurred_at_ms);
+    }
+
+    fn append_inner(
+        &mut self,
+        event_type: &str,
+        capability: Option<&str>,
+        identity_key: Option<&[u8; 32]>,
         occurred_at_ms: u64,
     ) {
         let sig = sign_entry(
@@ -85,12 +127,14 @@ impl AuditLog {
             &self.chain_hash,
             event_type,
             capability,
+            identity_key,
             occurred_at_ms,
         );
         self.chain_hash = advance_chain(&self.key, &sig);
         self.entries.push(AuditEntry {
             event_type: event_type.to_string(),
             capability: capability.map(str::to_string),
+            identity_key: identity_key.copied(),
             occurred_at_ms,
             signature: sig,
         });
@@ -118,6 +162,7 @@ impl AuditLog {
                 &chain_hash,
                 &entry.event_type,
                 entry.capability.as_deref(),
+                entry.identity_key.as_ref(),
                 entry.occurred_at_ms,
             );
             if entry.signature != expected {
@@ -233,17 +278,27 @@ fn sign_entry(
     chain_hash: &[u8; 32],
     event_type: &str,
     capability: Option<&str>,
+    identity_key: Option<&[u8; 32]>,
     occurred_at_ms: u64,
 ) -> [u8; 32] {
     let cap = capability.unwrap_or("");
     let mut buf: Vec<u8> = Vec::with_capacity(
-        32 + 4 + event_type.len() + 4 + cap.len() + 8,
+        32 + 4 + event_type.len() + 4 + cap.len() + 1 + 32 + 8,
     );
     buf.extend_from_slice(chain_hash);
     buf.extend_from_slice(&(event_type.len() as u32).to_le_bytes());
     buf.extend_from_slice(event_type.as_bytes());
     buf.extend_from_slice(&(cap.len() as u32).to_le_bytes());
     buf.extend_from_slice(cap.as_bytes());
+    // Commit to the identity key with a presence flag so that swapping
+    // None ↔ Some or substituting a different key breaks the signature.
+    match identity_key {
+        None => buf.push(0u8),
+        Some(k) => {
+            buf.push(1u8);
+            buf.extend_from_slice(k);
+        }
+    }
     buf.extend_from_slice(&occurred_at_ms.to_le_bytes());
     kh256(key, &buf)
 }
@@ -265,10 +320,18 @@ fn entry_to_json(e: &AuditEntry) -> String {
         Some(c) => format!("\"{}\"", c),
         None => "null".to_string(),
     };
+    let id_key_field = match &e.identity_key {
+        Some(k) => {
+            let hex: String = k.iter().map(|b| format!("{b:02x}")).collect();
+            format!("\"{}\"", hex)
+        }
+        None => "null".to_string(),
+    };
     let sig_hex: String = e.signature.iter().map(|b| format!("{b:02x}")).collect();
     format!(
-        "{{\"event_type\":\"{}\",\"capability\":{},\"occurred_at_ms\":{},\"signature\":\"{}\"}}",
-        e.event_type, cap_field, e.occurred_at_ms, sig_hex
+        "{{\"event_type\":\"{}\",\"capability\":{},\"identity_key\":{},\
+         \"occurred_at_ms\":{},\"signature\":\"{}\"}}",
+        e.event_type, cap_field, id_key_field, e.occurred_at_ms, sig_hex
     )
 }
 
@@ -442,5 +505,121 @@ mod tests {
         assert_eq!(content, "{\"entries\":[]}", "empty log must produce empty entries array");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Identity key coverage (Feature 171) ──────────────────────────────────
+
+    const PEER_KEY_A: [u8; 32] = [0x11u8; 32];
+    const PEER_KEY_B: [u8; 32] = [0x22u8; 32];
+
+    #[test]
+    fn identity_key_entry_verifies() {
+        let mut log = AuditLog::new(TEST_KEY);
+        log.append_with_identity("identity_verified", None, &PEER_KEY_A, 1000);
+        assert!(log.verify());
+        assert_eq!(log.entries()[0].identity_key, Some(PEER_KEY_A));
+    }
+
+    #[test]
+    fn mixed_identity_and_plain_entries_verify() {
+        let mut log = AuditLog::new(TEST_KEY);
+        log.append_with_identity("identity_verified", None, &PEER_KEY_A, 1);
+        log.append("view_granted", Some("view"), 2);
+        log.append_with_identity("peer_connected", None, &PEER_KEY_B, 3);
+        log.append("session_ended", None, 4);
+        assert!(log.verify());
+        assert_eq!(log.entries().len(), 4);
+        assert_eq!(log.entries()[0].identity_key, Some(PEER_KEY_A));
+        assert_eq!(log.entries()[1].identity_key, None);
+        assert_eq!(log.entries()[2].identity_key, Some(PEER_KEY_B));
+        assert_eq!(log.entries()[3].identity_key, None);
+    }
+
+    #[test]
+    fn tampered_identity_key_fails_verify() {
+        let mut log = AuditLog::new(TEST_KEY);
+        log.append_with_identity("identity_verified", None, &PEER_KEY_A, 1000);
+
+        let mut entries = log.entries().to_vec();
+        entries[0].identity_key = Some(PEER_KEY_B);
+        assert!(
+            !AuditLog::verify_entries(&entries, &TEST_KEY),
+            "substituted identity_key must break signature"
+        );
+    }
+
+    #[test]
+    fn identity_key_none_to_some_fails_verify() {
+        let mut log = AuditLog::new(TEST_KEY);
+        log.append("view_granted", Some("view"), 1);
+
+        let mut entries = log.entries().to_vec();
+        entries[0].identity_key = Some(PEER_KEY_A);
+        assert!(
+            !AuditLog::verify_entries(&entries, &TEST_KEY),
+            "adding an identity_key to an unsigned-identity entry must break signature"
+        );
+    }
+
+    #[test]
+    fn identity_key_some_to_none_fails_verify() {
+        let mut log = AuditLog::new(TEST_KEY);
+        log.append_with_identity("identity_verified", None, &PEER_KEY_A, 1);
+
+        let mut entries = log.entries().to_vec();
+        entries[0].identity_key = None;
+        assert!(
+            !AuditLog::verify_entries(&entries, &TEST_KEY),
+            "removing the identity_key from an identity entry must break signature"
+        );
+    }
+
+    #[test]
+    fn export_json_includes_identity_key_as_hex() {
+        let mut log = AuditLog::new(TEST_KEY);
+        log.append_with_identity("identity_verified", None, &PEER_KEY_A, 1);
+        let json = log.export_json();
+        let expected_hex = "11".repeat(32);
+        assert!(
+            json.contains(&format!("\"identity_key\":\"{}\"", expected_hex)),
+            "json must contain identity_key as lowercase hex; json={json}"
+        );
+    }
+
+    #[test]
+    fn export_json_null_identity_key_for_plain_entry() {
+        let mut log = AuditLog::new(TEST_KEY);
+        log.append("view_granted", Some("view"), 1);
+        let json = log.export_json();
+        assert!(
+            json.contains("\"identity_key\":null"),
+            "plain entry must export identity_key as null; json={json}"
+        );
+    }
+
+    #[test]
+    fn identity_key_entries_differ_from_plain_entries_with_same_fields() {
+        let mut log_plain    = AuditLog::new(TEST_KEY);
+        let mut log_identity = AuditLog::new(TEST_KEY);
+        log_plain.append("identity_verified", None, 1);
+        log_identity.append_with_identity("identity_verified", None, &PEER_KEY_A, 1);
+        assert_ne!(
+            log_plain.entries()[0].signature,
+            log_identity.entries()[0].signature,
+            "entry with identity_key must have a different signature than the same entry without"
+        );
+    }
+
+    #[test]
+    fn two_different_identity_keys_produce_different_signatures() {
+        let mut log_a = AuditLog::new(TEST_KEY);
+        let mut log_b = AuditLog::new(TEST_KEY);
+        log_a.append_with_identity("identity_verified", None, &PEER_KEY_A, 1);
+        log_b.append_with_identity("identity_verified", None, &PEER_KEY_B, 1);
+        assert_ne!(
+            log_a.entries()[0].signature,
+            log_b.entries()[0].signature,
+            "different identity keys must produce different signatures"
+        );
     }
 }
