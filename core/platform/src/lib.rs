@@ -53,6 +53,7 @@ pub mod ipc;
 pub mod keypoint_extractor;
 pub mod motion_encoder;
 pub mod neural_vocoder;
+pub mod opus_packetizer;
 pub mod reference_frame_sender;
 pub mod screen_capture;
 pub mod synthesis_network;
@@ -121,6 +122,10 @@ pub use neural_vocoder::{
 };
 pub use opus_decoder::{
     lace_mode_from_cpu_pct, LaceMode, LACE_CPU_OVERHEAD_PCT, LACE_HEADROOM_THRESHOLD_PCT,
+};
+pub use opus_packetizer::{
+    frame_duration_ms_from_tier, header_overhead_fraction, packets_per_second,
+    DEFAULT_FRAME_MS, SURVIVAL_FRAME_MS,
 };
 pub use plc_chain::{
     PlcChain, PlcOutcome, PlcStage,
