@@ -79,6 +79,7 @@ pub mod temporal_svc;
 pub mod thermal;
 pub mod tier;
 pub mod tier_gears;
+pub mod tier_downgrade_guard;
 pub mod tier_upgrade_guard;
 pub mod uac;
 
@@ -215,6 +216,10 @@ pub use governor_load_shed::{bulk_xfer_frozen, bulk_xfer_headroom_bps};
 pub use governor_summary::{
     converge_summaries, ConvergedSummary, GovernorSummary,
     LOSS_PPM_SCALE, SUMMARY_INTERVAL_MS,
+};
+pub use tier_downgrade_guard::{
+    downgrade_trigger_bps, tier_floor_bps, TierDowngradeGuard,
+    COMFORTABLE_FLOOR_BPS, CONSTRAINED_FLOOR_BPS, DOWNGRADE_TRIGGER_RATIO, FULL_FLOOR_BPS,
 };
 pub use tier_upgrade_guard::{TierUpgradeGuard, UPGRADE_HOLD_TICKS};
 pub use stream_drop_policy::{DropPolicy, StreamDropPolicy, StreamKind};
