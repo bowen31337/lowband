@@ -3,6 +3,7 @@
 //! | Feature | Description |
 //! |---------|-------------|
 //! | 44  | Mic capture: captures microphone audio at 48 kHz with sample_rate feeding the encode pipeline |
+//! | 45  | AEC3: AEC3-class adaptive filter with echo_canceller output before noise_suppression |
 //! | 46  | Noise suppressor: RNNoise-class neural filtering with noise_suppression at ~0.1% CPU |
 //! | 47  | AGC: applies automatic gain control ahead of detection with voice_activity gating |
 //! | 51  | LBRR FEC: recovers isolated audio losses in-band with lbrr_fec redundancy |
@@ -40,6 +41,7 @@
 
 pub mod agc;
 pub mod collapse_audio;
+pub mod echo_canceller;
 pub mod governor_load_shed;
 pub mod cpu_ceiling;
 pub mod cursor_sender;
@@ -77,6 +79,11 @@ pub mod thermal;
 pub mod tier;
 pub mod uac;
 
+pub use echo_canceller::{
+    EchoCanceller, AecStats,
+    AEC_FILTER_TAPS, AEC_FRAME_MS, AEC_FRAME_SAMPLES, AEC_MIN_REF_POWER,
+    AEC_REG_FACTOR, AEC_SAMPLE_RATE, AEC_STEP_SIZE,
+};
 pub use agc::{
     AgcProcessor, AgcStats,
     AGC_ENVELOPE_ATTACK, AGC_ENVELOPE_FLOOR, AGC_ENVELOPE_RELEASE,

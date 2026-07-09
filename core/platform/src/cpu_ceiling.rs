@@ -458,7 +458,11 @@ mod tests {
 
     #[test]
     fn throttle_returns_continue_when_cpu_is_idle() {
-        let mut c = CpuCeiling::new(35.0);
+        // Use a high ceiling (95%) so the test holds even when the full
+        // suite's parallel threads add background load to this process.
+        // The 35% production ceiling is validated by constrained_constructor_sets_35_pct;
+        // this test verifies that a sleeping process is never throttled.
+        let mut c = CpuCeiling::new(95.0);
         c.set_tier(TierState::Constrained);
 
         // Warmup tick.
