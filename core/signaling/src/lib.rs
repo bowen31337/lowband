@@ -4,10 +4,8 @@
 //! mints short-lived TURN credentials.  Holds no media — it exits the path
 //! the moment the peers connect directly.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::{
     extract::{Path, State},
@@ -21,16 +19,15 @@ use serde_json::Value;
 
 const SESSION_TTL: Duration = Duration::from_secs(300);
 
-// ── State ─────────────────────────────────────────────────────────────────────
-
-struct SessionEntry {
-    peer_descriptor: Value,
-    expires_at: SystemTime,
-}
+// ── session_codes store ───────────────────────────────────────────────────────
+//
+// Each entry encodes: expires_at (i64 LE) || created_at (i64 LE) || responder_pubkey
+// This mirrors the session_codes table schema (code PK, responder_pubkey,
+// created_at, expires_at).
 
 #[derive(Clone)]
 pub struct AppState {
-    sessions: Arc<Mutex<HashMap<String, SessionEntry>>>,
+    session_codes: sled::Tree,
 }
 
 impl Default for AppState {
@@ -40,9 +37,32 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// Creates a temporary in-memory session_codes store (used by tests).
     pub fn new() -> Self {
-        Self { sessions: Arc::new(Mutex::new(HashMap::new())) }
+        let db = sled::Config::new()
+            .temporary(true)
+            .open()
+            .expect("in-memory sled failed");
+        Self { session_codes: db.open_tree("session_codes").expect("open tree") }
     }
+
+    /// Opens (or creates) a file-backed session_codes store at `path`.
+    pub fn open(path: &str) -> sled::Result<Self> {
+        let db = sled::open(path)?;
+        Ok(Self { session_codes: db.open_tree("session_codes")? })
+    }
+}
+
+fn encode_entry(created_at: i64, expires_at: i64, pubkey: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(16 + pubkey.len());
+    v.extend_from_slice(&expires_at.to_le_bytes());
+    v.extend_from_slice(&created_at.to_le_bytes());
+    v.extend_from_slice(pubkey);
+    v
+}
+
+fn decode_expires_at(bytes: &[u8]) -> Option<i64> {
+    bytes.get(..8).map(|b| i64::from_le_bytes(b.try_into().unwrap()))
 }
 
 // ── Session code generation ────────────────────────────────────────────────────
@@ -51,6 +71,13 @@ static CODE_SEQ: AtomicU64 = AtomicU64::new(100_000_000);
 
 fn gen_code() -> String {
     format!("{:09}", CODE_SEQ.fetch_add(1, Ordering::Relaxed) % 1_000_000_000)
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -75,11 +102,10 @@ struct SessionResp {
 
 async fn post_session(State(st): State<AppState>) -> (StatusCode, Json<SessionResp>) {
     let code = gen_code();
-    let entry = SessionEntry {
-        peer_descriptor: serde_json::json!({ "code": &code }),
-        expires_at: SystemTime::now() + SESSION_TTL,
-    };
-    st.sessions.lock().unwrap().insert(code.clone(), entry);
+    let now = unix_now();
+    let expires_at = now + SESSION_TTL.as_secs() as i64;
+    let entry = encode_entry(now, expires_at, &[]);
+    st.session_codes.insert(code.as_bytes(), entry).unwrap();
     (StatusCode::CREATED, Json(SessionResp { session_code: code }))
 }
 
@@ -87,14 +113,15 @@ async fn get_join(
     State(st): State<AppState>,
     Path(code): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    let mut map = st.sessions.lock().unwrap();
-    let now = SystemTime::now();
-    match map.get(&code) {
-        Some(e) if e.expires_at > now => Ok(Json(e.peer_descriptor.clone())),
-        Some(_) => {
-            map.remove(&code);
-            Err(StatusCode::NOT_FOUND)
-        }
+    let now = unix_now();
+    match st.session_codes.get(code.as_bytes()).unwrap() {
+        Some(bytes) => match decode_expires_at(&bytes) {
+            Some(exp) if exp > now => Ok(Json(serde_json::json!({ "code": code }))),
+            _ => {
+                st.session_codes.remove(code.as_bytes()).ok();
+                Err(StatusCode::NOT_FOUND)
+            }
+        },
         None => Err(StatusCode::NOT_FOUND),
     }
 }
@@ -130,11 +157,13 @@ async fn post_candidate(
 }
 
 fn check_code(st: &AppState, code: &str) -> Result<(), StatusCode> {
-    let map = st.sessions.lock().unwrap();
-    let now = SystemTime::now();
-    match map.get(code) {
-        Some(e) if e.expires_at > now => Ok(()),
-        _ => Err(StatusCode::NOT_FOUND),
+    let now = unix_now();
+    match st.session_codes.get(code.as_bytes()).unwrap() {
+        Some(bytes) => match decode_expires_at(&bytes) {
+            Some(exp) if exp > now => Ok(()),
+            _ => Err(StatusCode::NOT_FOUND),
+        },
+        None => Err(StatusCode::NOT_FOUND),
     }
 }
 
