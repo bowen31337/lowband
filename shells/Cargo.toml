@@ -5,3 +5,4 @@ edition = "2021"
 description = "LowBand UI shell utilities — session summary and end-of-call display"
 
 [dependencies]
+lowband-platform = { path = "../core/platform", default-features = false }
