@@ -44,9 +44,20 @@
 //! // → write channel_data to the UDP socket bound to the TURN server.
 //! ```
 
+use std::time::{Duration, Instant};
+
 use lowband_lbtp::turn_relay::{
     TurnChannelDataFramer, TURN_MAX_CHANNEL_NUMBER, TURN_MIN_CHANNEL_NUMBER,
 };
+
+/// Datagram count at which [`DatagramCipher::needs_rekey`] signals that the
+/// traffic key must be replaced.  2^30 ≈ 1.07 billion datagrams.
+pub const TRAFFIC_KEY_DATAGRAM_LIMIT: u64 = 1 << 30;
+
+/// Maximum wall-clock age of a single traffic key.  A cipher whose key was
+/// installed more than this long ago will signal [`DatagramCipher::needs_rekey`]
+/// regardless of the datagram count.
+pub const TRAFFIC_KEY_MAX_AGE: Duration = Duration::from_secs(15 * 60);
 
 /// Overhead added to each plaintext datagram by [`DatagramCipher::seal`].
 ///
@@ -100,6 +111,7 @@ impl RelayPayload {
 pub struct DatagramCipher {
     key: [u8; 32],
     counter: u64,
+    born_at: Instant,
 }
 
 impl DatagramCipher {
@@ -107,7 +119,31 @@ impl DatagramCipher {
     ///
     /// The `key` is derived from HKDF traffic key derivation (Feature 20).
     pub fn new(key: [u8; 32]) -> Self {
-        Self { key, counter: 0 }
+        Self { key, counter: 0, born_at: Instant::now() }
+    }
+
+    /// Returns `true` when the caller must derive a fresh traffic key and call
+    /// [`rotate_key`](Self::rotate_key) before sealing further datagrams.
+    ///
+    /// Either threshold independently triggers the signal:
+    /// - **Datagram limit**: `counter` has reached [`TRAFFIC_KEY_DATAGRAM_LIMIT`]
+    ///   (2^30 datagrams).
+    /// - **Age limit**: the key has been active for at least
+    ///   [`TRAFFIC_KEY_MAX_AGE`] (15 minutes).
+    pub fn needs_rekey(&self) -> bool {
+        self.counter >= TRAFFIC_KEY_DATAGRAM_LIMIT
+            || self.born_at.elapsed() >= TRAFFIC_KEY_MAX_AGE
+    }
+
+    /// Install `new_key` as the active traffic key and reset both the datagram
+    /// counter and the age clock.
+    ///
+    /// After this call [`needs_rekey`](Self::needs_rekey) returns `false` until
+    /// one of the two thresholds is reached again with the new key.
+    pub fn rotate_key(&mut self, new_key: [u8; 32]) {
+        self.key = new_key;
+        self.counter = 0;
+        self.born_at = Instant::now();
     }
 
     /// Encrypt `plaintext` and return an opaque [`RelayPayload`].
@@ -474,6 +510,79 @@ mod tests {
         assert_eq!(
             RELAY_GUARD_OVERHEAD_BYTES, 28,
             "overhead must equal 12 B IETF ChaCha20 nonce + 16 B Poly1305 tag"
+        );
+    }
+
+    // ── Feature 22 — traffic key invalidation ─────────────────────────────────
+
+    #[test]
+    fn needs_rekey_false_for_fresh_cipher() {
+        let cipher = DatagramCipher::new(TEST_KEY);
+        assert!(!cipher.needs_rekey(), "fresh cipher must not need rekeying");
+    }
+
+    #[test]
+    fn needs_rekey_false_one_datagram_before_limit() {
+        let mut cipher = DatagramCipher::new(TEST_KEY);
+        cipher.counter = TRAFFIC_KEY_DATAGRAM_LIMIT - 1;
+        assert!(
+            !cipher.needs_rekey(),
+            "cipher must not need rekey one datagram before the 2^30 limit"
+        );
+    }
+
+    #[test]
+    fn needs_rekey_true_at_datagram_limit() {
+        let mut cipher = DatagramCipher::new(TEST_KEY);
+        cipher.counter = TRAFFIC_KEY_DATAGRAM_LIMIT;
+        assert!(
+            cipher.needs_rekey(),
+            "cipher must signal rekey when counter reaches 2^30"
+        );
+    }
+
+    #[test]
+    fn needs_rekey_true_when_key_is_15_minutes_old() {
+        let mut cipher = DatagramCipher::new(TEST_KEY);
+        // Wind born_at back past the maximum key age.
+        cipher.born_at = std::time::Instant::now() - TRAFFIC_KEY_MAX_AGE;
+        assert!(
+            cipher.needs_rekey(),
+            "cipher must signal rekey when the key has been active for 15 minutes"
+        );
+    }
+
+    #[test]
+    fn rotate_key_resets_counter_and_clears_rekey_signal() {
+        let mut cipher = DatagramCipher::new(TEST_KEY);
+        cipher.counter = TRAFFIC_KEY_DATAGRAM_LIMIT;
+        assert!(cipher.needs_rekey(), "precondition: cipher needs rekey");
+
+        cipher.rotate_key([0xBBu8; 32]);
+
+        assert_eq!(cipher.counter(), 0, "counter must reset to 0 after rotate_key");
+        assert!(
+            !cipher.needs_rekey(),
+            "cipher must not need rekey immediately after rotate_key"
+        );
+    }
+
+    #[test]
+    fn rotate_key_installs_new_key_material() {
+        // Seal at counter=0 with original key.
+        let mut cipher = DatagramCipher::new(TEST_KEY);
+        let plaintext = b"probe datagram";
+        let before = cipher.seal(plaintext);
+
+        // rotate_key resets counter to 0, so the next seal uses the same nonce
+        // position but a different key — ciphertext must differ.
+        cipher.rotate_key([0xCCu8; 32]);
+        let after = cipher.seal(plaintext);
+
+        assert_ne!(
+            before.as_bytes(),
+            after.as_bytes(),
+            "different keys must produce different ciphertext for the same plaintext and nonce"
         );
     }
 }
