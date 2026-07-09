@@ -1056,6 +1056,32 @@ impl EntropyPaletteDecoder {
 mod tests {
     use super::*;
 
+    // Helper: build a tile with exactly `n_colors` distinct colours, each
+    // mapping to a unique 12-bit fingerprint via `(R>>4, G>>4, B>>4)`.
+    fn tile_with_n_distinct_colors(n: usize) -> Vec<u8> {
+        assert!(n <= 256 * 16, "too many colours for a 32×32 tile");
+        let mut px = vec![0xFFu8; TILE_BYTES];
+        for (i, chunk) in px.chunks_exact_mut(4).enumerate() {
+            let c = i % n;
+            // Spread colours across the B and G nibble channels so each maps to
+            // a distinct (R>>4, G>>4, B>>4) fingerprint.
+            chunk[0] = ((c % 16) as u8) << 4; // B nibble
+            chunk[1] = ((c / 16 % 16) as u8) << 4; // G nibble
+            chunk[2] = ((c / 256 % 16) as u8) << 4; // R nibble
+            chunk[3] = 0xFF;
+        }
+        px
+    }
+
+    #[test]
+    fn single_colour_tile_is_text() {
+        let px = tile_with_n_distinct_colors(1);
+        let class = classify_tile(&px);
+        assert_eq!(class, TileClass::Text);
+        assert!(class.coarse_is_lossless());
+        assert!(!class.needs_refinement());
+    }
+
     #[test]
     fn two_colour_tile_is_text() {
         let mut px = vec![0xFFu8; TILE_BYTES];
@@ -1075,6 +1101,29 @@ mod tests {
         assert!(!class.needs_refinement());
     }
 
+    // ── classify_tile: class boundaries ──────────────────────────────────────
+
+    #[test]
+    fn four_colour_tile_is_text() {
+        let px = tile_with_n_distinct_colors(TEXT_COLOR_LIMIT);
+        assert_eq!(classify_tile(&px), TileClass::Text, "4 colours → Text");
+    }
+
+    #[test]
+    fn five_colour_tile_is_flat() {
+        let px = tile_with_n_distinct_colors(TEXT_COLOR_LIMIT + 1);
+        let class = classify_tile(&px);
+        assert_eq!(class, TileClass::Flat, "5 colours → Flat");
+        assert!(class.coarse_is_lossless(), "Flat must be lossless in coarse pass");
+        assert!(!class.needs_refinement(), "Flat does not need refinement");
+    }
+
+    #[test]
+    fn sixteen_colour_tile_is_flat() {
+        let px = tile_with_n_distinct_colors(PALETTE_COLOR_LIMIT);
+        assert_eq!(classify_tile(&px), TileClass::Flat, "16 colours → Flat");
+    }
+
     #[test]
     fn thirty_colour_tile_is_picture() {
         let mut px = vec![0u8; TILE_BYTES];
@@ -1090,6 +1139,46 @@ mod tests {
         assert_eq!(class, TileClass::Picture);
         assert!(!class.coarse_is_lossless());
         assert!(class.needs_refinement());
+    }
+
+    #[test]
+    fn seventeen_colour_tile_is_picture() {
+        let px = tile_with_n_distinct_colors(PALETTE_COLOR_LIMIT + 1);
+        let class = classify_tile(&px);
+        assert_eq!(class, TileClass::Picture, "17 colours → Picture");
+        assert!(!class.coarse_is_lossless());
+        assert!(class.needs_refinement());
+    }
+
+    #[test]
+    fn two_fifty_six_colour_tile_is_picture() {
+        let px = tile_with_n_distinct_colors(VIDEO_COLOR_LIMIT);
+        assert_eq!(classify_tile(&px), TileClass::Picture, "256 colours → Picture");
+    }
+
+    #[test]
+    fn two_fifty_seven_colour_tile_is_video() {
+        // Build a tile where the first 257 pixels each have a unique fingerprint.
+        // Remaining pixels repeat existing colours (tile is only 1024 pixels).
+        let mut px = vec![0u8; TILE_BYTES];
+        for (i, chunk) in px.chunks_exact_mut(4).enumerate() {
+            let c = i.min(VIDEO_COLOR_LIMIT); // first 257 are unique; rest repeat 257
+            chunk[0] = ((c % 16) as u8) << 4;
+            chunk[1] = ((c / 16 % 16) as u8) << 4;
+            chunk[2] = ((c / 256 % 16) as u8) << 4;
+            chunk[3] = 0xFF;
+        }
+        let class = classify_tile(&px);
+        assert_eq!(class, TileClass::Video, "257 distinct colours → Video");
+        assert!(!class.coarse_is_lossless());
+        assert!(!class.needs_refinement(), "Video never enters the refinement queue");
+    }
+
+    #[test]
+    fn video_class_has_lowest_saliency() {
+        assert!(TileClass::Video.saliency() < TileClass::Picture.saliency());
+        assert!(TileClass::Picture.saliency() < TileClass::Flat.saliency());
+        assert!(TileClass::Flat.saliency() < TileClass::Text.saliency());
     }
 
     #[test]
