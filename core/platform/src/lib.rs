@@ -79,6 +79,7 @@ pub mod temporal_svc;
 pub mod thermal;
 pub mod tier;
 pub mod tier_gears;
+pub mod tier_upgrade_guard;
 pub mod uac;
 
 pub use echo_canceller::{
@@ -215,6 +216,7 @@ pub use governor_summary::{
     converge_summaries, ConvergedSummary, GovernorSummary,
     LOSS_PPM_SCALE, SUMMARY_INTERVAL_MS,
 };
+pub use tier_upgrade_guard::{TierUpgradeGuard, UPGRADE_HOLD_TICKS};
 pub use stream_drop_policy::{DropPolicy, StreamDropPolicy, StreamKind};
 pub use thermal::{ThermalMonitor, ThermalPressure};
 pub use tier::TierState;
