@@ -1,6 +1,24 @@
-//! Feature 25 — E2EE relay transparency invariant.
+//! Features 21 & 25 — ChaCha20-Poly1305 datagram encryption and E2EE relay
+//! transparency invariant.
 //!
-//! # Invariant
+//! # Encryption (Feature 21)
+//!
+//! Every datagram is sealed under ChaCha20-Poly1305 (RFC 8439) using a
+//! monotone 64-bit counter nonce:
+//!
+//! ```text
+//! Wire layout per datagram:
+//!   [0..12)   — 12-byte IETF ChaCha20 nonce  (4 zero bytes || counter LE64)
+//!   [12..N+12)— ChaCha20 ciphertext           (same length as plaintext)
+//!   [N+12..)  — Poly1305 AEAD tag             (16 bytes)
+//! ```
+//!
+//! The counter increments with every call to [`DatagramCipher::seal`],
+//! guaranteeing nonce uniqueness within one key epoch.
+//! [`DatagramCipher::needs_rekey`] signals when the counter approaches 2^30
+//! or the key has been active for 15 minutes (Feature 22).
+//!
+//! # E2EE relay invariant (Feature 25)
 //!
 //! Every datagram routed through the TURN relay must be encrypted before it
 //! enters the relay framer.  This module enforces the invariant structurally
@@ -14,13 +32,6 @@
 //!    plaintext from reaching the TURN ChannelData framer.
 //! 3. The TURN server therefore forwards only ciphertext — it cannot read,
 //!    modify, or inject session content.
-//!
-//! # Stub note
-//!
-//! [`DatagramCipher::seal`] currently uses a placeholder transform (XOR +
-//! mock AEAD tag) that produces bytes verifiably different from the
-//! plaintext.  Feature 21 replaces the body with real ChaCha20-Poly1305;
-//! the type-level invariant and all surrounding code remain unchanged.
 //!
 //! # Integration
 //!
@@ -46,6 +57,7 @@
 
 use std::time::{Duration, Instant};
 
+use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce, aead::Aead};
 use lowband_lbtp::turn_relay::{
     TurnChannelDataFramer, TURN_MAX_CHANNEL_NUMBER, TURN_MIN_CHANNEL_NUMBER,
 };
@@ -62,9 +74,8 @@ pub const TRAFFIC_KEY_MAX_AGE: Duration = Duration::from_secs(15 * 60);
 /// Overhead added to each plaintext datagram by [`DatagramCipher::seal`].
 ///
 /// 12 bytes nonce (IETF ChaCha20 nonce prefix) + 16 bytes Poly1305 AEAD tag.
-/// Feature 21 fills these bytes with real crypto material; the constant
-/// reflects the final wire size accurately so callers can compute the largest
-/// plaintext that fits within the LBTP 1 200-byte relay ceiling.
+/// The constant reflects the final wire size accurately so callers can compute
+/// the largest plaintext that fits within the LBTP 1 200-byte relay ceiling.
 pub const RELAY_GUARD_OVERHEAD_BYTES: usize = 28;
 
 /// Sealed ciphertext datagram ready for TURN relay forwarding (Feature 25).
@@ -98,15 +109,13 @@ impl RelayPayload {
     }
 }
 
-/// Per-session datagram cipher — seals plaintext into [`RelayPayload`].
+/// Per-session datagram cipher — seals plaintext into [`RelayPayload`] using
+/// ChaCha20-Poly1305 (Feature 21).
 ///
-/// # Stub implementation
-///
-/// [`seal`](Self::seal) currently applies a deterministic XOR transform so
-/// tests can verify that ciphertext bytes differ from plaintext bytes and
-/// that every [`RelayPayload`] carries the correct overhead.  Feature 21
-/// replaces the body with ChaCha20-Poly1305; the struct fields, public API,
-/// and all callers remain unchanged.
+/// Each call to [`seal`](Self::seal) uses a unique 12-byte IETF nonce derived
+/// from the monotone datagram counter, so nonces never repeat within a key
+/// epoch.  [`needs_rekey`](Self::needs_rekey) signals when the epoch must end
+/// (Feature 22).
 #[derive(Debug)]
 pub struct DatagramCipher {
     key: [u8; 32],
@@ -146,39 +155,46 @@ impl DatagramCipher {
         self.born_at = Instant::now();
     }
 
-    /// Encrypt `plaintext` and return an opaque [`RelayPayload`].
+    /// Encrypt `plaintext` and return an opaque [`RelayPayload`] (Feature 21).
     ///
-    /// Prepends a 12-byte nonce derived from the monotonic counter and
-    /// appends a 16-byte mock AEAD tag.  The counter ensures every datagram
-    /// has a unique nonce; Feature 22 rotates `key` when `counter` nears
-    /// 2^30.
+    /// Uses ChaCha20-Poly1305 (RFC 8439).  The 12-byte IETF nonce is built
+    /// from the monotone datagram counter, ensuring uniqueness per key epoch.
     ///
-    /// # Stub transform
-    ///
-    /// XORs each plaintext byte with `key[i % 32]` and a nonce-derived byte,
-    /// then appends 16 bytes as the placeholder AEAD tag.  This is NOT
-    /// cryptographically secure — Feature 21 replaces it with the real
-    /// ChaCha20-Poly1305 AEAD.  The output is verifiably different from the
-    /// plaintext and has the correct wire overhead.
+    /// Wire layout: `[nonce 12 B][ciphertext N B][Poly1305 tag 16 B]`.
     pub fn seal(&mut self, plaintext: &[u8]) -> RelayPayload {
-        let nonce = self.nonce_bytes();
+        let nonce_bytes = self.nonce_bytes();
         self.counter += 1;
 
-        let mut out = Vec::with_capacity(RELAY_GUARD_OVERHEAD_BYTES + plaintext.len());
+        let aead = ChaCha20Poly1305::new_from_slice(&self.key)
+            .expect("key is always 32 bytes");
+        let nonce = Nonce::from(nonce_bytes);
+        // encrypt() appends the 16-byte Poly1305 tag: returns [ciphertext || tag].
+        let ciphertext_with_tag = aead
+            .encrypt(&nonce, plaintext)
+            .expect("ChaCha20-Poly1305 encrypt never fails for a valid key");
 
-        // 12-byte nonce prefix.
-        out.extend_from_slice(&nonce);
-
-        // XOR-encrypted body (stub for ChaCha20 keystream application).
-        for (i, &byte) in plaintext.iter().enumerate() {
-            out.push(byte ^ self.key[i % 32] ^ nonce[i % 12]);
-        }
-
-        // 16-byte placeholder Poly1305 tag.
-        let tag_seed = nonce[0].wrapping_add(nonce[4]).wrapping_add(nonce[8]);
-        out.extend(core::iter::repeat(tag_seed).take(16));
-
+        let mut out = Vec::with_capacity(12 + ciphertext_with_tag.len());
+        out.extend_from_slice(&nonce_bytes);
+        out.extend_from_slice(&ciphertext_with_tag);
         RelayPayload(out)
+    }
+
+    /// Decrypt a [`RelayPayload`] and return the plaintext, or `None` if the
+    /// AEAD tag does not verify (tampered ciphertext, wrong key, or truncated
+    /// wire data).
+    ///
+    /// Wire layout expected: `[nonce 12 B][ciphertext N B][Poly1305 tag 16 B]`.
+    pub fn open(&self, payload: &RelayPayload) -> Option<Vec<u8>> {
+        let bytes = payload.as_bytes();
+        if bytes.len() < RELAY_GUARD_OVERHEAD_BYTES {
+            return None;
+        }
+        let (nonce_bytes, ciphertext_with_tag) = bytes.split_at(12);
+
+        let aead = ChaCha20Poly1305::new_from_slice(&self.key)
+            .expect("key is always 32 bytes");
+        let nonce = Nonce::try_from(nonce_bytes).ok()?;
+        aead.decrypt(&nonce, ciphertext_with_tag).ok()
     }
 
     /// Number of datagrams sealed so far (equals the next nonce counter).
@@ -189,7 +205,6 @@ impl DatagramCipher {
     /// Build the 12-byte IETF ChaCha20 nonce from the current counter.
     ///
     /// Layout: 4 zero bytes of padding, then the 8-byte little-endian counter.
-    /// Feature 21 uses the same layout when invoking the real AEAD.
     fn nonce_bytes(&self) -> [u8; 12] {
         let mut nonce = [0u8; 12];
         nonce[4..12].copy_from_slice(&self.counter.to_le_bytes());
@@ -256,9 +271,6 @@ mod tests {
 
     #[test]
     fn relay_payload_only_constructible_via_seal() {
-        // The compiler enforces this — `RelayPayload(vec![])` does not compile
-        // from outside this module.  This test documents the invariant by
-        // exercising the only public constructor and asserting a non-empty result.
         let mut cipher = DatagramCipher::new(TEST_KEY);
         let payload = cipher.seal(b"media frame");
         assert!(!payload.is_empty(), "seal must produce a non-empty RelayPayload");
@@ -273,7 +285,7 @@ mod tests {
         let payload = cipher.seal(plaintext);
         let ciphertext = payload.as_bytes();
 
-        // Compare the XOR-encrypted body (skip 12-byte nonce, skip 16-byte tag).
+        // ChaCha20 ciphertext body: skip 12-byte nonce prefix and 16-byte tag.
         let body = &ciphertext[12..ciphertext.len() - 16];
         assert_ne!(
             body, plaintext,
@@ -353,6 +365,89 @@ mod tests {
         );
     }
 
+    // ── Feature 21: ChaCha20-Poly1305 AEAD correctness ────────────────────────
+
+    #[test]
+    fn open_roundtrip_recovers_plaintext() {
+        let mut cipher = DatagramCipher::new(TEST_KEY);
+        let plaintext = b"audio frame roundtrip";
+        let payload = cipher.seal(plaintext);
+        let recovered = cipher.open(&payload).expect("open must succeed for valid ciphertext");
+        assert_eq!(recovered, plaintext, "decrypted plaintext must match original");
+    }
+
+    #[test]
+    fn open_roundtrip_empty_plaintext() {
+        let mut cipher = DatagramCipher::new(TEST_KEY);
+        let payload = cipher.seal(&[]);
+        let recovered = cipher.open(&payload).expect("open must succeed for empty plaintext");
+        assert!(recovered.is_empty());
+    }
+
+    #[test]
+    fn open_rejects_tampered_ciphertext() {
+        let mut cipher = DatagramCipher::new(TEST_KEY);
+        let payload = cipher.seal(b"sensitive media");
+        let mut bytes = payload.into_bytes();
+        // Flip a bit in the ciphertext body (after the 12-byte nonce).
+        bytes[13] ^= 0xFF;
+        let tampered = RelayPayload(bytes);
+        assert!(
+            cipher.open(&tampered).is_none(),
+            "open must return None when ciphertext is tampered (Poly1305 tag mismatch)"
+        );
+    }
+
+    #[test]
+    fn open_rejects_tampered_tag() {
+        let mut cipher = DatagramCipher::new(TEST_KEY);
+        let payload = cipher.seal(b"video frame");
+        let mut bytes = payload.into_bytes();
+        // Corrupt the last byte of the Poly1305 tag.
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x01;
+        let tampered = RelayPayload(bytes);
+        assert!(
+            cipher.open(&tampered).is_none(),
+            "open must return None when the AEAD tag is corrupted"
+        );
+    }
+
+    #[test]
+    fn open_rejects_wrong_key() {
+        let mut sealer = DatagramCipher::new([0xAA; 32]);
+        let payload = sealer.seal(b"screen tile");
+
+        let opener = DatagramCipher::new([0xBB; 32]);
+        assert!(
+            opener.open(&payload).is_none(),
+            "open must return None when the key does not match"
+        );
+    }
+
+    #[test]
+    fn open_rejects_truncated_payload() {
+        let mut cipher = DatagramCipher::new(TEST_KEY);
+        let payload = cipher.seal(b"some data");
+        // Truncate to fewer than RELAY_GUARD_OVERHEAD_BYTES.
+        let truncated = RelayPayload(payload.as_bytes()[..10].to_vec());
+        assert!(
+            cipher.open(&truncated).is_none(),
+            "open must return None for payloads shorter than overhead"
+        );
+    }
+
+    #[test]
+    fn seal_open_multiple_datagrams_each_verify() {
+        let mut cipher = DatagramCipher::new(TEST_KEY);
+        let messages: &[&[u8]] = &[b"frame 0", b"frame 1", b"frame 2", b"frame 3"];
+        let payloads: Vec<_> = messages.iter().map(|m| cipher.seal(m)).collect();
+        for (payload, &msg) in payloads.iter().zip(messages.iter()) {
+            let recovered = cipher.open(payload).expect("each datagram must decrypt");
+            assert_eq!(recovered, msg);
+        }
+    }
+
     // ── E2EE invariant: relay sees only ciphertext ─────────────────────────────
 
     #[test]
@@ -364,7 +459,6 @@ mod tests {
         let payload = cipher.seal(plaintext);
         let channel_data = bridge.frame_for_relay(&payload).unwrap();
 
-        // Skip the 4-byte TURN ChannelData header to inspect the relay payload.
         let relay_payload = &channel_data[TURN_CHANNEL_HEADER_BYTES..];
 
         assert_ne!(
@@ -433,7 +527,6 @@ mod tests {
         let mut cipher = DatagramCipher::new(TEST_KEY);
         let bridge = E2eeRelayBridge::new(TURN_DEFAULT_CHANNEL_NUMBER);
 
-        // Plaintext large enough that ciphertext (+ 28 B overhead) exceeds 1 200 B.
         let oversized = vec![0u8; TURN_MAX_PAYLOAD_BYTES - RELAY_GUARD_OVERHEAD_BYTES + 1];
         let payload = cipher.seal(&oversized);
 
@@ -544,7 +637,6 @@ mod tests {
     #[test]
     fn needs_rekey_true_when_key_is_15_minutes_old() {
         let mut cipher = DatagramCipher::new(TEST_KEY);
-        // Wind born_at back past the maximum key age.
         cipher.born_at = std::time::Instant::now() - TRAFFIC_KEY_MAX_AGE;
         assert!(
             cipher.needs_rekey(),
@@ -569,13 +661,11 @@ mod tests {
 
     #[test]
     fn rotate_key_installs_new_key_material() {
-        // Seal at counter=0 with original key.
         let mut cipher = DatagramCipher::new(TEST_KEY);
         let plaintext = b"probe datagram";
         let before = cipher.seal(plaintext);
 
-        // rotate_key resets counter to 0, so the next seal uses the same nonce
-        // position but a different key — ciphertext must differ.
+        // rotate_key resets counter to 0, so same nonce position but different key.
         cipher.rotate_key([0xCCu8; 32]);
         let after = cipher.seal(plaintext);
 
