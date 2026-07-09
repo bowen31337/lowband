@@ -40,6 +40,7 @@ pub mod intra_refresh;
 pub mod ipc;
 pub mod keypoint_extractor;
 pub mod motion_encoder;
+pub mod reference_frame_sender;
 pub mod screen_capture;
 pub mod synthesis_network;
 pub mod temporal_svc;
@@ -76,6 +77,10 @@ pub use keypoint_extractor::{
 pub use motion_encoder::{
     MotionCodecError, MotionDecoder, MotionEncoder, MOTION_BITRATE_HI_BPS,
     MOTION_BITRATE_LO_BPS, MOTION_TARGET_FPS,
+};
+pub use reference_frame_sender::{
+    GearAReferenceDecoder, GearAReferenceEncoder, ReferenceCodecError, ReferenceFramePacket,
+    HEADER_LEN as REFERENCE_FRAME_HEADER_LEN, TAG_REFERENCE_FRAME,
 };
 pub use synthesis_network::{
     ExpressionLatents, HeadPose, HeadResolution, Keypoint3D, MotionLatents,
