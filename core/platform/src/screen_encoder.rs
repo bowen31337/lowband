@@ -496,6 +496,325 @@ impl Default for VideoSubStream {
     }
 }
 
+// ── bits_per_index ────────────────────────────────────────────────────────────
+
+/// Bits needed to represent a palette index for a palette of size `n`.
+///
+/// | n      | bits | note                         |
+/// |--------|------|------------------------------|
+/// | 1      | 0    | single colour; no index data |
+/// | 2      | 1    |                              |
+/// | 3–4    | 2    |                              |
+/// | 5–8    | 3    |                              |
+/// | 9–16   | 4    |                              |
+#[inline]
+fn bits_per_index(n: usize) -> u32 {
+    match n {
+        0 | 1 => 0,
+        2     => 1,
+        3..=4 => 2,
+        5..=8 => 3,
+        _     => 4, // 9..=PALETTE_COLOR_LIMIT
+    }
+}
+
+// ── BitWriter ─────────────────────────────────────────────────────────────────
+
+struct BitWriter {
+    buf:       Vec<u8>,
+    current:   u8,
+    bits_used: u32,
+}
+
+impl BitWriter {
+    fn new() -> Self {
+        Self { buf: Vec::new(), current: 0, bits_used: 0 }
+    }
+
+    /// Append the `n_bits` LSBs of `value` to the stream (LSB first per byte).
+    fn write_bits(&mut self, value: u32, n_bits: u32) {
+        for i in 0..n_bits {
+            let bit = ((value >> i) & 1) as u8;
+            self.current |= bit << self.bits_used;
+            self.bits_used += 1;
+            if self.bits_used == 8 {
+                self.buf.push(self.current);
+                self.current   = 0;
+                self.bits_used = 0;
+            }
+        }
+    }
+
+    /// Flush any partial byte (zero-padded) and return the byte buffer.
+    fn finish(mut self) -> Vec<u8> {
+        if self.bits_used > 0 {
+            self.buf.push(self.current);
+        }
+        self.buf
+    }
+}
+
+// ── BitReader ─────────────────────────────────────────────────────────────────
+
+struct BitReader<'a> {
+    data:     &'a [u8],
+    byte_pos: usize,
+    bit_pos:  u32,
+}
+
+impl<'a> BitReader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, byte_pos: 0, bit_pos: 0 }
+    }
+
+    /// Read `n_bits` from the stream into the LSBs of a `u32` (LSB first).
+    ///
+    /// Returns `None` when fewer than `n_bits` bits remain.
+    fn read_bits(&mut self, n_bits: u32) -> Option<u32> {
+        let mut result = 0u32;
+        for i in 0..n_bits {
+            if self.byte_pos >= self.data.len() {
+                return None;
+            }
+            let bit = (self.data[self.byte_pos] >> self.bit_pos) & 1;
+            result       |= (bit as u32) << i;
+            self.bit_pos += 1;
+            if self.bit_pos == 8 {
+                self.byte_pos += 1;
+                self.bit_pos   = 0;
+            }
+        }
+        Some(result)
+    }
+}
+
+// ── PaletteEncodeError ────────────────────────────────────────────────────────
+
+/// Error returned by [`PaletteTileEncoder::encode`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaletteEncodeError {
+    /// Tile contains more than [`PALETTE_COLOR_LIMIT`] distinct RGB colours.
+    ///
+    /// The tile has escaped the palette coding path; the caller must route it
+    /// to PICTURE or VIDEO coding instead.
+    TooManyColors {
+        /// Lower bound on distinct colours found before giving up.
+        found: usize,
+    },
+    /// Input slice is not exactly [`TILE_BYTES`] bytes.
+    InvalidLength {
+        /// Actual byte count supplied.
+        got: usize,
+    },
+}
+
+impl std::fmt::Display for PaletteEncodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooManyColors { found } => write!(
+                f,
+                "tile has >{PALETTE_COLOR_LIMIT} distinct colours (found ≥{found}); \
+                 use PICTURE coding"
+            ),
+            Self::InvalidLength { got } => write!(
+                f,
+                "palette encoder expects {TILE_BYTES} bytes, got {got}"
+            ),
+        }
+    }
+}
+
+// ── PaletteDecodeError ────────────────────────────────────────────────────────
+
+/// Error returned by [`PaletteTileDecoder::decode`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaletteDecodeError {
+    /// The encoded stream ended before all expected data was consumed.
+    Truncated,
+    /// The `n_colors` header byte is `0` or `> 16`.
+    InvalidPaletteSize {
+        /// The value found in the header.
+        got: u8,
+    },
+    /// A palette index in the index stream is ≥ the declared palette size.
+    IndexOutOfRange {
+        /// The bad index value.
+        index: u32,
+        /// The palette size declared in the header.
+        palette_size: usize,
+    },
+}
+
+impl std::fmt::Display for PaletteDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Truncated => write!(f, "palette bitstream truncated"),
+            Self::InvalidPaletteSize { got } => write!(
+                f,
+                "n_colors must be 1–{PALETTE_COLOR_LIMIT}, got {got}"
+            ),
+            Self::IndexOutOfRange { index, palette_size } => write!(
+                f,
+                "palette index {index} is out of range for palette of size {palette_size}"
+            ),
+        }
+    }
+}
+
+// ── PaletteTileEncoder ────────────────────────────────────────────────────────
+
+/// Lossless palette encoder for TEXT and FLAT tiles (Feature 93).
+///
+/// Converts a BGRA8 32×32 tile into a compact `palette_index` bitstream.
+/// Full 4:4:4 chroma: all three channels (B, G, R) are stored at full
+/// precision per palette entry with no subsampling.
+///
+/// # Wire format
+///
+/// ```text
+/// byte  0            : n_colors (1..=16)
+/// bytes 1..(1+n*3)   : palette — n × [B, G, R], source BGR order
+/// bytes (1+n*3)..    : bit-packed index stream, LSB-first within each byte
+///                      bits per index:
+///                        n_colors == 1 → 0 bits (no index bytes)
+///                        n_colors == 2 → 1 bit
+///                        n_colors  3–4 → 2 bits
+///                        n_colors  5–8 → 3 bits
+///                        n_colors 9–16 → 4 bits
+///                      1 024 indices packed, final byte zero-padded
+/// ```
+///
+/// [`PaletteTileDecoder::decode`] is the matching decoder.
+pub struct PaletteTileEncoder;
+
+impl PaletteTileEncoder {
+    /// Encode a BGRA8 tile to a `palette_index` bitstream.
+    ///
+    /// `pixels` must be exactly [`TILE_BYTES`] bytes.
+    ///
+    /// Returns `Err(PaletteEncodeError::TooManyColors)` when the tile contains
+    /// more than [`PALETTE_COLOR_LIMIT`] distinct RGB values; the caller should
+    /// route the tile to PICTURE or VIDEO coding.
+    pub fn encode(pixels: &[u8]) -> Result<Vec<u8>, PaletteEncodeError> {
+        if pixels.len() != TILE_BYTES {
+            return Err(PaletteEncodeError::InvalidLength { got: pixels.len() });
+        }
+
+        let palette = Self::build_palette(pixels)?;
+        let n       = palette.len();
+        let bpi     = bits_per_index(n);
+
+        let index_bytes = if bpi == 0 { 0 } else { (1024 * bpi as usize + 7) / 8 };
+        let mut out = Vec::with_capacity(1 + n * 3 + index_bytes);
+
+        // Header: colour count.
+        out.push(n as u8);
+
+        // Palette table: n × [B, G, R] (full 4:4:4).
+        for bgr in &palette {
+            out.extend_from_slice(bgr);
+        }
+
+        // Index stream: one index per pixel, bit-packed LSB-first.
+        if bpi > 0 {
+            let mut w = BitWriter::new();
+            for chunk in pixels.chunks_exact(4) {
+                let bgr = [chunk[0], chunk[1], chunk[2]];
+                let idx = palette.iter().position(|p| p == &bgr).unwrap() as u32;
+                w.write_bits(idx, bpi);
+            }
+            out.extend(w.finish());
+        }
+
+        Ok(out)
+    }
+
+    /// Extract an ordered list of distinct [B, G, R] colours from `pixels`.
+    ///
+    /// Colours are recorded in first-occurrence order.  Returns
+    /// `Err(TooManyColors)` as soon as a new colour would exceed
+    /// [`PALETTE_COLOR_LIMIT`].
+    fn build_palette(pixels: &[u8]) -> Result<Vec<[u8; 3]>, PaletteEncodeError> {
+        let mut palette: Vec<[u8; 3]> = Vec::with_capacity(PALETTE_COLOR_LIMIT);
+        for chunk in pixels.chunks_exact(4) {
+            let bgr = [chunk[0], chunk[1], chunk[2]];
+            if !palette.contains(&bgr) {
+                if palette.len() == PALETTE_COLOR_LIMIT {
+                    return Err(PaletteEncodeError::TooManyColors {
+                        found: PALETTE_COLOR_LIMIT + 1,
+                    });
+                }
+                palette.push(bgr);
+            }
+        }
+        Ok(palette)
+    }
+}
+
+// ── PaletteTileDecoder ────────────────────────────────────────────────────────
+
+/// Lossless palette decoder for TEXT and FLAT tiles (Feature 93).
+///
+/// Reconstructs a BGRA8 32×32 tile from a bitstream produced by
+/// [`PaletteTileEncoder::encode`].  Alpha is always restored as `0xFF`.
+pub struct PaletteTileDecoder;
+
+impl PaletteTileDecoder {
+    /// Decode a `palette_index` bitstream into BGRA8 pixel data.
+    ///
+    /// Returns exactly [`TILE_BYTES`] bytes on success.
+    pub fn decode(data: &[u8]) -> Result<Vec<u8>, PaletteDecodeError> {
+        if data.is_empty() {
+            return Err(PaletteDecodeError::Truncated);
+        }
+
+        let n = data[0] as usize;
+        if n == 0 || n > PALETTE_COLOR_LIMIT {
+            return Err(PaletteDecodeError::InvalidPaletteSize { got: data[0] });
+        }
+
+        let palette_end = 1 + n * 3;
+        if data.len() < palette_end {
+            return Err(PaletteDecodeError::Truncated);
+        }
+
+        let palette: Vec<[u8; 3]> = data[1..palette_end]
+            .chunks_exact(3)
+            .map(|s| [s[0], s[1], s[2]])
+            .collect();
+
+        let bpi  = bits_per_index(n);
+        let mut pixels = vec![0u8; TILE_BYTES];
+
+        if bpi == 0 {
+            // Single colour: fill every pixel without reading an index stream.
+            let [b, g, r] = palette[0];
+            for out in pixels.chunks_exact_mut(4) {
+                out[0] = b; out[1] = g; out[2] = r; out[3] = 0xFF;
+            }
+        } else {
+            let mut reader = BitReader::new(&data[palette_end..]);
+            for out in pixels.chunks_exact_mut(4) {
+                let idx = reader
+                    .read_bits(bpi)
+                    .ok_or(PaletteDecodeError::Truncated)? as usize;
+                if idx >= palette.len() {
+                    return Err(PaletteDecodeError::IndexOutOfRange {
+                        index:        idx as u32,
+                        palette_size: palette.len(),
+                    });
+                }
+                let [b, g, r] = palette[idx];
+                out[0] = b; out[1] = g; out[2] = r; out[3] = 0xFF;
+            }
+        }
+
+        Ok(pixels)
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,6 +865,136 @@ mod tests {
         assert_eq!(first,  TileClass::Text,    "Text saliency=3 must come before Picture saliency=1");
         assert_eq!(second, TileClass::Picture);
         assert!(q.is_empty());
+    }
+
+    // ── PaletteTileEncoder / PaletteTileDecoder ───────────────────────────────
+
+    #[test]
+    fn palette_single_colour_round_trips() {
+        let mut pixels = vec![0u8; TILE_BYTES];
+        for chunk in pixels.chunks_exact_mut(4) {
+            chunk.copy_from_slice(&[0x11, 0x22, 0x33, 0xFF]);
+        }
+        let encoded = PaletteTileEncoder::encode(&pixels).unwrap();
+        let decoded = PaletteTileDecoder::decode(&encoded).unwrap();
+        // Alpha is restored as 0xFF; original alpha may differ, check RGB only.
+        for (i, (d, p)) in decoded.chunks_exact(4).zip(pixels.chunks_exact(4)).enumerate() {
+            assert_eq!(d[..3], p[..3], "pixel {i}: BGR mismatch after round-trip");
+            assert_eq!(d[3], 0xFF,     "pixel {i}: alpha must be 0xFF after decode");
+        }
+    }
+
+    #[test]
+    fn palette_two_colour_round_trips() {
+        let mut pixels = vec![0u8; TILE_BYTES];
+        for (i, chunk) in pixels.chunks_exact_mut(4).enumerate() {
+            if i % 2 == 0 {
+                chunk.copy_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+            } else {
+                chunk.copy_from_slice(&[0x00, 0x00, 0x00, 0xFF]);
+            }
+        }
+        let encoded = PaletteTileEncoder::encode(&pixels).unwrap();
+        let decoded = PaletteTileDecoder::decode(&encoded).unwrap();
+        for (i, (d, p)) in decoded.chunks_exact(4).zip(pixels.chunks_exact(4)).enumerate() {
+            assert_eq!(d[..3], p[..3], "pixel {i}: BGR mismatch");
+        }
+    }
+
+    #[test]
+    fn palette_sixteen_colour_round_trips() {
+        let mut pixels = vec![0u8; TILE_BYTES];
+        for (i, chunk) in pixels.chunks_exact_mut(4).enumerate() {
+            let c = (i % 16) as u8;
+            chunk[0] = c << 4;
+            chunk[1] = 0x00;
+            chunk[2] = 0x00;
+            chunk[3] = 0xFF;
+        }
+        let encoded = PaletteTileEncoder::encode(&pixels).unwrap();
+        assert_eq!(encoded[0], 16, "n_colors header must be 16");
+        let decoded = PaletteTileDecoder::decode(&encoded).unwrap();
+        for (i, (d, p)) in decoded.chunks_exact(4).zip(pixels.chunks_exact(4)).enumerate() {
+            assert_eq!(d[..3], p[..3], "pixel {i}: BGR mismatch");
+        }
+    }
+
+    #[test]
+    fn palette_encoder_rejects_seventeen_colours() {
+        let mut pixels = vec![0u8; TILE_BYTES];
+        for (i, chunk) in pixels.chunks_exact_mut(4).enumerate() {
+            let c = (i % 17) as u8;
+            chunk[0] = c;
+            chunk[1] = 0x00;
+            chunk[2] = 0x00;
+            chunk[3] = 0xFF;
+        }
+        match PaletteTileEncoder::encode(&pixels) {
+            Err(PaletteEncodeError::TooManyColors { .. }) => {}
+            other => panic!("expected TooManyColors, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn palette_encoder_rejects_wrong_length() {
+        let pixels = vec![0u8; TILE_BYTES - 1];
+        match PaletteTileEncoder::encode(&pixels) {
+            Err(PaletteEncodeError::InvalidLength { got }) => {
+                assert_eq!(got, TILE_BYTES - 1);
+            }
+            other => panic!("expected InvalidLength, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn palette_decoder_rejects_empty_input() {
+        assert_eq!(
+            PaletteTileDecoder::decode(&[]),
+            Err(PaletteDecodeError::Truncated)
+        );
+    }
+
+    #[test]
+    fn palette_decoder_rejects_zero_palette_size() {
+        assert_eq!(
+            PaletteTileDecoder::decode(&[0]),
+            Err(PaletteDecodeError::InvalidPaletteSize { got: 0 })
+        );
+    }
+
+    #[test]
+    fn palette_decoder_rejects_oversized_palette() {
+        assert_eq!(
+            PaletteTileDecoder::decode(&[17]),
+            Err(PaletteDecodeError::InvalidPaletteSize { got: 17 })
+        );
+    }
+
+    #[test]
+    fn palette_single_colour_no_index_bytes() {
+        // A 1-colour tile has n_colors=1, 3 palette bytes, and 0 index bytes.
+        let mut pixels = vec![0u8; TILE_BYTES];
+        for chunk in pixels.chunks_exact_mut(4) {
+            chunk.copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xFF]);
+        }
+        let encoded = PaletteTileEncoder::encode(&pixels).unwrap();
+        assert_eq!(encoded.len(), 1 + 1 * 3, "single-colour: header + 3-byte palette only");
+        assert_eq!(encoded[0], 1);
+        assert_eq!(encoded[1], 0xAA); // B
+        assert_eq!(encoded[2], 0xBB); // G
+        assert_eq!(encoded[3], 0xCC); // R
+    }
+
+    #[test]
+    fn bits_per_index_table() {
+        assert_eq!(bits_per_index(1),  0);
+        assert_eq!(bits_per_index(2),  1);
+        assert_eq!(bits_per_index(3),  2);
+        assert_eq!(bits_per_index(4),  2);
+        assert_eq!(bits_per_index(5),  3);
+        assert_eq!(bits_per_index(8),  3);
+        assert_eq!(bits_per_index(9),  4);
+        assert_eq!(bits_per_index(16), 4);
     }
 
     #[test]
