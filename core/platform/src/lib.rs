@@ -2,6 +2,7 @@
 //!
 //! | Feature | Description |
 //! |---------|-------------|
+//! | 52  | DRED sender: sends Opus 1.5 DRED neural redundancy to reconstruct multi-hundred-millisecond loss_bursts |
 //! | 56  | Jitter buffer: converges playout under 15% with time_scaling instead of gaps |
 //! | 57  | PLC chain: orders concealment — FEC decode, DRED, neural PLC, faded comfort noise |
 //! | 58  | Opus LACE: enables LACE decoder enhancement when cpu_headroom is available |
@@ -34,6 +35,7 @@
 pub mod cpu_ceiling;
 pub mod cpu_telemetry;
 pub mod denoise_prefilter;
+pub mod dred_sender;
 pub mod elevation;
 pub mod jitter_buffer;
 pub mod opus_decoder;
@@ -58,6 +60,11 @@ pub mod uac;
 pub use cpu_ceiling::{CpuCeiling, ThrottleAction};
 pub use cpu_telemetry::CpuTelemetry;
 pub use denoise_prefilter::DenoisePrefilter;
+pub use dred_sender::{
+    dred_depth_from_burst_ms, DredSender,
+    DRED_BITS_PER_FRAME, DRED_FRAME_DURATION_MS,
+    DRED_OVERHEAD_BPS_PER_FRAME, MAX_DRED_DEPTH_FRAMES, MIN_DRED_DEPTH_FRAMES,
+};
 pub use elevation::{ElevationKind, ElevationOutcome, ElevationRequest, EscalationReason};
 pub use fallback_detector::{
     FallbackDetector, FrameAnalysis, GuardrailDetector, GuardrailTrip,
