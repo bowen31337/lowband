@@ -66,6 +66,44 @@ pub const VIDEO_COLOR_LIMIT: usize = 256;
 /// the saliency priority in the refinement queue.
 const TEXT_COLOR_LIMIT: usize = 4;
 
+/// Deadline for the coarse pass to be transmitted after a damage event (ms).
+///
+/// Feature 97: every dirty tile produced by the coarse pass must be encoded
+/// and queued for transmission within this window so the viewer sees the
+/// change without perceptible lag.
+pub const COARSE_PASS_DEADLINE_MS: u64 = 50;
+
+/// Conservative byte estimate for one TEXT tile in the coarse pass.
+///
+/// TEXT tiles (≤4 distinct colours) use AV1 `palette_index` coding
+/// (Features 93–94).  For a 32×32 tile with 1–4 colours:
+///
+///   palette table : 4 entries × 3 bytes (RGB)             = 12 bytes
+///   index plane   : 1 024 pixels × 2 bits / ~20× entropy  ≈ 13 bytes
+///   per-tile framing and header overhead                   ≈  5 bytes
+///   ──────────────────────────────────────────────────────────────────
+///   conservative total                                     ≈ 30 bytes
+///
+/// Actual text tiles compress tighter when most pixels share a single
+/// background colour; 30 bytes is the safe upper bound used for timing.
+pub const COARSE_BYTES_PER_PALETTE_TILE: u64 = 30;
+
+/// Conservative byte estimate for one PICTURE tile in the fast lossy coarse pass.
+///
+/// PICTURE tiles (17–256 colours) are encoded with a fast lossy AV1 preset
+/// in the coarse pass — favouring low encode latency over quality.  The
+/// coarse image is substantially smaller than the
+/// [`LOSSLESS_BYTES_PER_PICTURE_TILE`] (400 B) refinement target:
+///
+///   32 × 32 pixels × 0.3 bits/px (fast preset, high QP) / 8 ≈ 39 bytes
+///   per-tile header and OBU framing overhead               ≈ 36 bytes
+///   ──────────────────────────────────────────────────────────────────
+///   conservative total                                     ≈ 75 bytes
+///
+/// The lossy coarse encode provides a recognisable first impression;
+/// the refinement pass restores pixel-exact quality within ~1 second.
+pub const COARSE_BYTES_PER_PICTURE_TILE_COARSE: u64 = 75;
+
 /// Target deadline for PICTURE tiles to reach pixel-exact quality (ms).
 pub const PIXEL_EXACT_DEADLINE_MS: u64 = 1_000;
 
