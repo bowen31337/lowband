@@ -38,6 +38,7 @@
 //! every network bandwidth.
 
 pub mod agc;
+pub mod collapse_audio;
 pub mod cpu_ceiling;
 pub mod cursor_sender;
 pub mod mic_capture;
@@ -79,6 +80,11 @@ pub use agc::{
     AGC_ENVELOPE_ATTACK, AGC_ENVELOPE_FLOOR, AGC_ENVELOPE_RELEASE,
     AGC_GAIN_DECREASE_COEFF, AGC_GAIN_INCREASE_COEFF,
     AGC_MAX_GAIN, AGC_MIN_GAIN, AGC_TARGET_RMS,
+};
+pub use collapse_audio::{
+    CollapseAudioGovernor, CollapseAudioResponse,
+    COLLAPSE_AUDIO_BPS, COLLAPSE_DRED_DEPTH_FRAMES,
+    COLLAPSE_HOLD_TICKS, COLLAPSE_THRESHOLD_RATIO,
 };
 pub use cpu_ceiling::{CpuCeiling, ThrottleAction};
 pub use cursor_sender::{
