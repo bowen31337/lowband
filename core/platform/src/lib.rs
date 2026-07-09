@@ -2,6 +2,7 @@
 //!
 //! | Feature | Description |
 //! |---------|-------------|
+//! | 57  | PLC chain: orders concealment — FEC decode, DRED, neural PLC, faded comfort noise |
 //! | 58  | Opus LACE: enables LACE decoder enhancement when cpu_headroom is available |
 //! | 128 | Denoise pre-filter: cleans sensor noise with denoise_prefilter before encode |
 //! | 155 | Privilege escalation: per-platform elevation documented, explicit, never silent |
@@ -34,6 +35,7 @@ pub mod cpu_telemetry;
 pub mod denoise_prefilter;
 pub mod elevation;
 pub mod opus_decoder;
+pub mod plc_chain;
 pub mod fallback_detector;
 pub mod gear_policy;
 pub mod input_injection;
@@ -91,6 +93,10 @@ pub use synthesis_network::{
 };
 pub use opus_decoder::{
     lace_mode_from_cpu_pct, LaceMode, LACE_CPU_OVERHEAD_PCT, LACE_HEADROOM_THRESHOLD_PCT,
+};
+pub use plc_chain::{
+    PlcChain, PlcOutcome, PlcStage,
+    COMFORT_NOISE_FADE_FRAMES, DRED_DEPTH_FRAMES, NEURAL_PLC_MAX_FRAMES,
 };
 pub use thermal::{ThermalMonitor, ThermalPressure};
 pub use tier::TierState;
