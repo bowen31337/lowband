@@ -1,17 +1,24 @@
-//! Join-by-code screen shown to the assisted user — Feature 149.
+//! Join-by-code screen shown to the assisted user — Features 148 and 149.
 //!
 //! The assisted user (Ana) is handed a 9-digit code out-of-band (phone call,
 //! SMS, ticket).  She types it once and presses **Join**.  The daemon handles
 //! all network connectivity: ICE gathering, NAT traversal, TURN relay selection,
 //! and Noise-IK handshake.  The UI shell asks for nothing networking-related.
 //!
-//! # Zero-networking-questions invariant
+//! # Zero-networking-questions invariant (Feature 149)
 //!
 //! [`JoinScreen`] has exactly one input field — `session_code` — and exposes
 //! no server address, port, protocol, proxy, relay, or STUN/TURN configuration
 //! to the user.  The [`connect`](JoinScreen::connect) method requires only that
 //! a valid code was entered; the daemon resolves all connectivity details from
 //! the code and the ambient environment.
+//!
+//! # time_to_connected measurement (Feature 148)
+//!
+//! [`JoinScreen`] records the wall-clock instant when [`connect`](JoinScreen::connect)
+//! is called and computes [`time_to_connected_ms`](JoinScreen::time_to_connected_ms)
+//! when [`on_connected`](JoinScreen::on_connected) fires.  The shell reports this
+//! to the daemon for telemetry.  The system SLA is p95 ≤ 5 000 ms from code entry.
 //!
 //! # State machine
 //!
@@ -42,6 +49,7 @@
 //! // Daemon fires the connected event — shell transitions the screen.
 //! screen.on_connected();
 //! assert_eq!(screen.state(), JoinState::Connected);
+//! assert!(screen.time_to_connected_ms().is_some());
 //! ```
 
 /// Errors returned by [`JoinScreen::set_code`].
@@ -125,12 +133,21 @@ pub struct JoinScreen {
     /// connectivity details are resolved by the daemon.
     session_code: Option<String>,
     state: JoinState,
+    /// Wall-clock instant recorded when `connect()` is called (Feature 148).
+    connect_start: Option<std::time::Instant>,
+    /// Elapsed milliseconds from `connect()` to `on_connected()` (Feature 148).
+    time_to_connected_ms: Option<u64>,
 }
 
 impl JoinScreen {
     /// Create a new join screen in the [`JoinState::Idle`] state.
     pub fn new() -> Self {
-        JoinScreen { session_code: None, state: JoinState::Idle }
+        JoinScreen {
+            session_code: None,
+            state: JoinState::Idle,
+            connect_start: None,
+            time_to_connected_ms: None,
+        }
     }
 
     /// Validate and store the session code entered by the user.
@@ -167,6 +184,9 @@ impl JoinScreen {
     /// retry) to [`JoinState::Connecting`].  The shell caller is expected to
     /// forward the code to the daemon over the IPC socket.
     ///
+    /// Records the current instant as the start of the connection attempt for
+    /// [`time_to_connected_ms`](Self::time_to_connected_ms) measurement (Feature 148).
+    ///
     /// Returns the 9-digit code that should be sent to the daemon, so the
     /// caller does not need to call [`session_code`](Self::session_code)
     /// separately.
@@ -180,14 +200,30 @@ impl JoinScreen {
             return Err(ConnectError::NoCodeEntered);
         }
         self.state = JoinState::Connecting;
+        self.connect_start = Some(std::time::Instant::now());
+        self.time_to_connected_ms = None;
         Ok(self.session_code.as_deref().unwrap())
     }
 
     /// Transition to [`JoinState::Connected`].
     ///
     /// Call this when the daemon fires a `SessionEstablished` IPC event.
+    /// Computes and stores [`time_to_connected_ms`](Self::time_to_connected_ms)
+    /// from the instant [`connect`](Self::connect) was called (Feature 148).
     pub fn on_connected(&mut self) {
+        if let Some(start) = self.connect_start {
+            self.time_to_connected_ms = Some(start.elapsed().as_millis() as u64);
+        }
         self.state = JoinState::Connected;
+    }
+
+    /// Elapsed milliseconds from [`connect`](Self::connect) to
+    /// [`on_connected`](Self::on_connected) (Feature 148).
+    ///
+    /// Returns `None` until a connection has been successfully established.
+    /// The system SLA is p95 ≤ 5 000 ms from code entry.
+    pub fn time_to_connected_ms(&self) -> Option<u64> {
+        self.time_to_connected_ms
     }
 
     /// Transition to [`JoinState::Failed`] with a human-readable reason string.
@@ -205,6 +241,8 @@ impl JoinScreen {
     pub fn reset(&mut self) {
         self.session_code = None;
         self.state = JoinState::Idle;
+        self.connect_start = None;
+        self.time_to_connected_ms = None;
     }
 
     /// Current screen state.
@@ -435,5 +473,65 @@ mod tests {
     fn connect_error_display_no_code_entered() {
         let e = ConnectError::NoCodeEntered;
         assert!(e.to_string().contains("9-digit"));
+    }
+
+    // ── time_to_connected_ms (Feature 148) ───────────────────────────────────
+
+    #[test]
+    fn time_to_connected_is_none_before_connection() {
+        let mut screen = JoinScreen::new();
+        screen.set_code("123456789").unwrap();
+        screen.connect().unwrap();
+        assert_eq!(screen.time_to_connected_ms(), None);
+    }
+
+    #[test]
+    fn time_to_connected_is_some_after_on_connected() {
+        let mut screen = JoinScreen::new();
+        screen.set_code("123456789").unwrap();
+        screen.connect().unwrap();
+        screen.on_connected();
+        assert!(
+            screen.time_to_connected_ms().is_some(),
+            "time_to_connected_ms must be recorded after on_connected"
+        );
+    }
+
+    #[test]
+    fn time_to_connected_is_none_before_connect_called() {
+        let screen = JoinScreen::new();
+        assert_eq!(screen.time_to_connected_ms(), None);
+    }
+
+    #[test]
+    fn time_to_connected_resets_on_reset() {
+        let mut screen = JoinScreen::new();
+        screen.set_code("123456789").unwrap();
+        screen.connect().unwrap();
+        screen.on_connected();
+        assert!(screen.time_to_connected_ms().is_some());
+        screen.reset();
+        assert_eq!(screen.time_to_connected_ms(), None);
+    }
+
+    #[test]
+    fn time_to_connected_resets_on_reconnect_after_failure() {
+        let mut screen = JoinScreen::new();
+
+        // First attempt connects and records timing.
+        screen.set_code("111111111").unwrap();
+        screen.connect().unwrap();
+        screen.on_connected();
+        assert!(screen.time_to_connected_ms().is_some());
+
+        // Reset and try again — timing must be cleared on reconnect.
+        screen.reset();
+        screen.set_code("222222222").unwrap();
+        screen.connect().unwrap();
+        assert_eq!(
+            screen.time_to_connected_ms(),
+            None,
+            "time_to_connected_ms must be None while reconnecting"
+        );
     }
 }
