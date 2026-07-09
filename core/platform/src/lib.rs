@@ -4,6 +4,7 @@
 //! |---------|-------------|
 //! | 51  | LBRR FEC: recovers isolated audio losses in-band with lbrr_fec redundancy |
 //! | 52  | DRED sender: sends Opus 1.5 DRED neural redundancy to reconstruct multi-hundred-millisecond loss_bursts |
+//! | 54  | DTX: silence costs near-zero bitrate with comfort_noise updates |
 //! | 56  | Jitter buffer: converges playout under 15% with time_scaling instead of gaps |
 //! | 57  | PLC chain: orders concealment — FEC decode, DRED, neural PLC, faded comfort noise |
 //! | 58  | Opus LACE: enables LACE decoder enhancement when cpu_headroom is available |
@@ -37,6 +38,7 @@ pub mod cpu_ceiling;
 pub mod cpu_telemetry;
 pub mod denoise_prefilter;
 pub mod dred_sender;
+pub mod dtx;
 pub mod lbrr_fec;
 pub mod elevation;
 pub mod jitter_buffer;
@@ -66,6 +68,10 @@ pub use dred_sender::{
     dred_depth_from_burst_ms, dred_depth_from_ge_burst_packets, DredSender,
     DRED_BITS_PER_FRAME, DRED_FRAME_DURATION_MS,
     DRED_OVERHEAD_BPS_PER_FRAME, MAX_DRED_DEPTH_FRAMES, MIN_DRED_DEPTH_FRAMES,
+};
+pub use dtx::{
+    DtxAction, DtxEncoder, DtxReceiver, DtxState,
+    DTX_HANGOVER_FRAMES, DTX_SID_BYTES, DTX_SID_INTERVAL_FRAMES, DTX_SILENCE_BPS,
 };
 pub use elevation::{ElevationKind, ElevationOutcome, ElevationRequest, EscalationReason};
 pub use fallback_detector::{
