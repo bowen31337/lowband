@@ -1,10 +1,11 @@
-//! Observability — Features 136, 137.
+//! Observability — Features 135, 136, 137.
 //!
-//! | Module | Feature | Description |
-//! |--------|---------|-------------|
-//! | [`ocr_probe`] | 136 | OCR-legibility probe: scores decoded screen frames |
-//! | [`telemetry`] | 137 | Opt-in aggregate-only QoS telemetry (no media content) |
-//! | [`sender`]    | 137 | HTTP/1.1 telemetry batch sender |
+//! | Module          | Feature | Description |
+//! |-----------------|---------|-------------|
+//! | [`vmaf_sample`] | 135 | VMAF-proxy probe: scores decoded camera frames for QoE |
+//! | [`ocr_probe`]   | 136 | OCR-legibility probe: scores decoded screen frames |
+//! | [`telemetry`]   | 137 | Opt-in aggregate-only QoS telemetry (no media content) |
+//! | [`sender`]      | 137 | HTTP/1.1 telemetry batch sender |
 //!
 //! ## Feature 137 — opt-in telemetry
 //!
@@ -17,3 +18,4 @@
 pub mod ocr_probe;
 pub mod sender;
 pub mod telemetry;
+pub mod vmaf_sample;
