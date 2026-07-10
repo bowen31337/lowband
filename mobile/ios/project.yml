@@ -1,0 +1,27 @@
+# XcodeGen spec — run `xcodegen generate` (CI does this) to produce
+# LowBandViewer.xcodeproj. The .xcodeproj is never committed.
+name: LowBandViewer
+options:
+  bundleIdPrefix: dev.lowband
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
+    SWIFT_VERSION: "5.9"
+targets:
+  LowBandViewer:
+    type: application
+    platform: iOS
+    sources: [LowBandViewer]
+    info:
+      path: LowBandViewer/Info.plist
+      properties:
+        CFBundleDisplayName: LowBand Viewer
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.lowband.viewer
+        # Set DEVELOPMENT_TEAM via CI env (XCODE_DEVELOPMENT_TEAM) for
+        # signed/TestFlight builds; simulator builds need no signing.

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LowBand Viewer</string>
+    <string name="tagline">Remote assist that works at 64 kbps</string>
+    <string name="join_code_hint">Join code (e.g. K7F-2QX)</string>
+    <string name="join_button">Join session</string>
+    <string name="status_bad_code">That doesn\'t look like a LowBand join code.</string>
+    <string name="status_preview">Pre-flight preview: code %1$s accepted.\nLive sessions arrive with the LBTP FFI milestone.</string>
+</resources>
