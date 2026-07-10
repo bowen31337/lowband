@@ -41,6 +41,7 @@
 
 pub mod agc;
 pub mod collapse_audio;
+pub mod control_loop;
 pub mod echo_canceller;
 pub mod governor_load_shed;
 pub mod governor_summary;
@@ -213,6 +214,7 @@ pub use plc_chain::{
     PlcChain, PlcOutcome, PlcStage,
     COMFORT_NOISE_FADE_FRAMES, DRED_DEPTH_FRAMES, NEURAL_PLC_MAX_FRAMES,
 };
+pub use control_loop::{ControlLoop, ControlLoopInput, ControlLoopOutput};
 pub use governor_load_shed::{bulk_xfer_frozen, bulk_xfer_headroom_bps};
 pub use governor_summary::{
     converge_summaries, ConvergedSummary, GovernorSummary,
