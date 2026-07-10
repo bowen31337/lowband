@@ -13,6 +13,19 @@ tests — doc comments and type stubs do not count.
 > false: a real join-code → signaling → Noise-IK-over-UDP → encrypted-data
 > path exists and is tested over real sockets.
 
+> **Update 2 (production codecs).** Both C-library codecs the PRD names are now
+> implemented and **CI-verified green** against the real libraries: FR-2 voice
+> via system **libopus** (`voice-opus` job) and FR-8 camera via **rav1e +
+> dav1d** (`camera-av1` job). They are feature-gated so the default build stays
+> pure-Rust/musl-clean; CI installs the C deps and runs them. The remaining
+> hard blockers are now only: mic/speaker **device I/O** (no audio hardware,
+> unverifiable even in CI), the **ONNX neural gears** (need trained models that
+> don't exist), and the branded **ViSQOL/VMAF** binaries (substituted with real
+> SSIM + segmental-SNR metrics). The core-connectivity verdict below stands,
+> but the media layer is no longer empty — it carries real audio (libopus /
+> ADPCM), real screen (lossless) and camera (AV1 / DCT) frames over the E2EE
+> session, all tested.
+
 ## Verdict: NOT READY for v1.2 — and not yet at Alpha (M1) exit either
 
 The PRD's release ladder (§10) is cumulative: v1.2 (M5) requires everything
@@ -144,14 +157,15 @@ rather than stubbed:
   (empirically: `audiopus_sys` needs `autoreconf`, absent; no cmake/sudo), so
   the `voice-opus` CI job installs `libopus-dev` and actually compiles + tests
   it against real libopus. DRED activates when the linked libopus is ≥ 1.5.
-- **Production camera codec (AV1, FR-8)** — **implemented.** `core/lowbandd/
-  src/av1_codec.rs` encodes tiles with `rav1e` (pure-Rust AV1 encoder — the
-  `av1-encode` feature, tested locally: real compressed AV1 below raw) and
-  decodes with `dav1d` (system libdav1d — the `av1` feature). Wired into the
-  screen codec's photographic-tile slot (DCT is the interim when AV1 is off);
-  the `camera-av1` CI job installs libdav1d + nasm and runs the full encode→
-  decode roundtrip. FR-8/AV1 is a GA/M3 item; the interim block-DCT ships in
-  the default build.
+- **Production camera codec (AV1, FR-8)** — **implemented, CI-verified green.**
+  `core/lowbandd/src/av1_codec.rs` encodes tiles with `rav1e` (pure-Rust AV1
+  encoder — the `av1-encode` feature, tested locally: real compressed AV1 below
+  raw) and decodes with `dav1d` (system libdav1d — the `av1` feature). Wired
+  into the screen codec's photographic-tile slot (DCT is the interim when AV1
+  is off); the `camera-av1` CI job installs libdav1d + nasm and runs the full
+  encode→decode roundtrip — **passing** (needed a low-delay dav1d config +
+  drain loop to un-buffer the single still frame). FR-8/AV1 is a GA/M3 item;
+  the interim block-DCT ships in the default build.
 - **Mic/speaker audio device I/O** — needs audio hardware to build and observe
   (`mic_capture.rs` has the capture FFI; playback FFI + the capture loop are
   the remaining wiring).
