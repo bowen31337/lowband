@@ -18,6 +18,7 @@ use lowband_messaging::MessageFrame;
 use crate::dataplane::{dispatch, Delivered};
 use crate::file_transfer::{FileReceiver, Progress, XferError, XferFrame};
 use crate::screen_transfer::{ScreenFrame, ScreenReceiver};
+use crate::voice::{VoiceFrame, VoiceReceiver};
 
 /// Which protocol a received datagram belongs to, by its kind byte.
 #[derive(Debug, PartialEq, Eq)]
@@ -28,6 +29,8 @@ pub enum Channel {
     File,
     /// Screen-frame transfer.
     Screen,
+    /// Voice frame (ADPCM / SID).
+    Voice,
     /// Unrecognized leading byte.
     Unknown(u8),
 }
@@ -38,6 +41,7 @@ pub fn classify(bytes: &[u8]) -> Channel {
         Some(0x01..=0x04) => Channel::Message,
         Some(0x10..=0x12) => Channel::File,
         Some(0x20..=0x22) => Channel::Screen,
+        Some(0x30..=0x31) => Channel::Voice,
         Some(&b) => Channel::Unknown(b),
         None => Channel::Unknown(0),
     }
@@ -52,6 +56,8 @@ pub enum Handled {
     File(Progress),
     /// A screen tile was applied; `Some(bytes)` on a completed frame.
     Screen { complete: bool },
+    /// A voice frame decoded to `samples` PCM samples of playout.
+    Voice { samples: usize },
     /// The datagram's kind byte matched no known channel.
     Unknown(u8),
 }
@@ -67,6 +73,9 @@ pub struct InboundRouter {
     pub screen: ScreenReceiver,
     /// The most recently completed screen framebuffer (BGRA8), if any.
     pub last_screen: Option<Vec<u8>>,
+    pub voice: VoiceReceiver,
+    /// The most recently decoded voice PCM frame (playout), if any.
+    pub last_voice: Option<Vec<i16>>,
 }
 
 impl InboundRouter {
@@ -79,6 +88,8 @@ impl InboundRouter {
             files,
             screen: ScreenReceiver::new(),
             last_screen: None,
+            voice: VoiceReceiver::new(),
+            last_voice: None,
         }
     }
 
@@ -111,6 +122,13 @@ impl InboundRouter {
                     self.last_screen = done;
                 }
                 Ok(Handled::Screen { complete })
+            }
+            Channel::Voice => {
+                let frame = VoiceFrame::decode(bytes).ok_or(XferError::Truncated)?;
+                let pcm = self.voice.decode(frame);
+                let samples = pcm.len();
+                self.last_voice = Some(pcm);
+                Ok(Handled::Voice { samples })
             }
             Channel::Unknown(b) => Ok(Handled::Unknown(b)),
         }
@@ -183,23 +201,34 @@ mod tests {
                 }
             }
             let got_screen = router.last_screen.clone();
-            (got_chat, got_screen)
+            let got_voice = router.last_voice.clone();
+            (got_chat, got_screen, got_voice)
         });
 
         let init_sock = UdpSocket::bind("127.0.0.1:0").unwrap();
         let mut client =
             SecureSession::connect(init_sock, resp_addr, &init_key, resp_pub, code).unwrap();
 
-        // Interleave a control message, a screen frame, and a file transfer on
-        // one channel — all three planes must route correctly.
+        // Interleave every plane — chat, voice, screen, file — on one channel;
+        // all four must route correctly.
         crate::dataplane::send_message(&mut client, &MessageFrame::Chat("starting".into())).unwrap();
+        let mut vsender = crate::voice::VoiceSender::new();
+        let tone: Vec<i16> = (0..crate::voice::FRAME_SAMPLES)
+            .map(|i| (12000.0 * (2.0 * std::f64::consts::PI * 440.0 * i as f64 / 8000.0).sin()) as i16)
+            .collect();
+        vsender.send_frame(&mut client, &tone).unwrap();
         let screen = crate::screen_transfer::text_screen(64, 32);
         crate::screen_transfer::send_frame(&mut client, 64, 32, &screen).unwrap();
         crate::file_transfer::send_file(&mut client, &src).unwrap();
 
-        let (chat, screen_out) = server.join().unwrap();
+        let (chat, screen_out, voice_out) = server.join().unwrap();
         assert_eq!(chat.as_deref(), Some("starting"), "chat routed to the message plane");
         assert_eq!(screen_out.as_deref(), Some(&screen[..]), "screen routed + pixel-perfect");
+        assert_eq!(
+            voice_out.map(|v| v.len()),
+            Some(crate::voice::FRAME_SAMPLES),
+            "voice routed + decoded to a full frame"
+        );
         assert_eq!(std::fs::read(&dst).unwrap(), data, "file routed to the xfer plane, intact");
         for p in [&dst, &resume, &src] {
             let _ = std::fs::remove_file(p);

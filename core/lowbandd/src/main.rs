@@ -21,12 +21,14 @@
 //! [`StreamBudget`](lowband_platform::ipc::IpcEvent::StreamBudget), and
 //! [`GearUpdate`](lowband_platform::ipc::IpcEvent::GearUpdate).
 
+mod adpcm;
 mod dataplane;
 mod file_transfer;
 mod inbound;
 mod screen_transfer;
 mod session;
 mod stun;
+mod voice;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};

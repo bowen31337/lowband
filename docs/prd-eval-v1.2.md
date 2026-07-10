@@ -129,15 +129,19 @@ The following eval findings have been implemented with tests (all pushed to
 | FR-6 "resume PARTIAL, no end-to-end transfer" | **integrated** | `core/lowbandd/src/file_transfer.rs` sends a real file over the `SecureSession` as datagram-safe fragments with per-fragment + whole-file BLAKE3, reassembles + verifies, and resumes a restarted transfer via `ResumableTransfer`. Test sends a file intact over a live Noise-IK session and resumes a mid-transfer crash. |
 | FR-7 "candidates exchanged but not gathered from STUN" | **STUN gathering** | `core/lowbandd/src/stun.rs` sends an RFC 5389 Binding Request and parses XOR-MAPPED-ADDRESS → the server-reflexive candidate, now published alongside the local one during establishment (`--stun` flag). Tested against a mock STUN server + an establishment run with STUN enabled. |
 | FR-3 / NFR-4 "text screen codec real but never wired to a transmit path" | **screen codec integrated** | `core/lowbandd/src/screen_transfer.rs` splits a frame into 32×32 tiles, encodes each with the existing lossless `PaletteTileEncoder` (raw BGRA fallback for photographic tiles pre-AV1), ships them over the `SecureSession`, and reassembles. Text screens round-trip **pixel-perfect** — strictly stronger than the OCR ≥ 99.5% bar. Routed through the daemon's inbound router alongside chat/file. Tested in-memory, over a real session, and interleaved with chat + file on one channel. |
+| FR-2 "voice pipeline exists but codec stubbed, nothing wired" | **voice carries audio (interim codec)** | `core/lowbandd/src/adpcm.rs` is a real IMA ADPCM codec (4:1, tested SNR); `core/lowbandd/src/voice.rs` runs PCM → VAD → the real `DtxEncoder` gate → ADPCM → `SecureSession`, with silence suppressed (≈0 kbps, NFR-5) and comfort-noise SID. A 440 Hz tone decodes over a live session at acceptable SNR; routed through the inbound router. **Honest interim:** this is ADPCM, not libopus/DRED — the Opus gears drop in behind the same `VoiceFrame` transport once a C toolchain is available. |
 
 **Still open (the dominant blockers).** These need C-library FFI, external
 tooling, or hardware this environment can't verify against, so they were left
 rather than stubbed:
 
-- **Real codecs** (libopus/SVT-AV1/dav1d/H.264) and **mic/speaker audio I/O** —
-  the single largest gap. The encrypted control/data plane runs in the daemon
-  now, but no *media* flows over it; confirmed infeasible here (no libopus, no
-  cmake, musl target, no sudo).
+- **Production codecs** (libopus/DRED for voice, SVT-AV1/dav1d for camera) and
+  **mic/speaker audio device I/O** — need a C toolchain (no libopus/cmake, musl
+  target, no sudo) and audio hardware to verify. The media *transport and
+  pipeline* are integrated and carry real audio (interim ADPCM) and lossless
+  screen frames over the E2EE session today; swapping ADPCM→Opus and adding
+  AV1 camera tiles is a drop-in behind the existing `VoiceFrame`/`ScreenFrame`
+  transports, plus wiring the platform mic/speaker capture loop.
 - **Neural ONNX runtime + models** behind the existing gates.
 - **Real ViSQOL / OCR / VMAF gates over netem** to replace the model-based
   approximations.
