@@ -58,7 +58,9 @@ jobs:
           track: internal
 
   ios:
-    runs-on: macos-14
+    # macos-15: XcodeGen 2.45+ emits a project format the default Xcode on
+    # macos-14 (15.x) cannot read.
+    runs-on: macos-15
     defaults:
       run:
         working-directory: mobile/ios

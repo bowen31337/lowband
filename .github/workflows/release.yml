@@ -31,6 +31,7 @@ jobs:
   build-linux:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
     steps:
@@ -44,6 +45,12 @@ jobs:
       - name: Install cargo-zigbuild (bundles zig)
         run: pip3 install cargo-zigbuild
       - name: Build
+        env:
+          # The repo .cargo/config.toml sets linker-flavor=ld.lld for
+          # x86_64-musl; zigbuild swaps the linker to `zig cc`, which
+          # rejects lld's -flavor argument. An empty RUSTFLAGS overrides
+          # all config-file rustflags for target artifacts.
+          RUSTFLAGS: ""
         run: |
           cargo zigbuild --release --target ${{ matrix.target }} $HOST_CFG \
             -p lowbandd -p lowband-signaling
@@ -62,6 +69,7 @@ jobs:
   build-windows:
     runs-on: windows-latest
     strategy:
+      fail-fast: false
       matrix:
         target: [x86_64-pc-windows-msvc, aarch64-pc-windows-msvc]
     steps:

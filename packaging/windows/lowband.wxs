@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  LowBand Windows MSI Installer — WiX 3.x source
+  LowBand Windows MSI Installer - WiX 3.x source
   ===============================================
   Designed for silent/MDM enterprise deployment:
-    - No interactive UI blocks — runs fully non-interactively with /qn
+    - No interactive UI blocks - runs fully non-interactively with /qn
     - Machine-wide installation under %ProgramFiles%\LowBand
     - lowbandd runs as a Virtual Service Account (NT SERVICE\LowBandDaemon)
       with least-privilege rights; no password management required
@@ -21,12 +21,12 @@
     - Optionally push the companion ADMX/ADML templates (packaging\windows\mdm\)
       to configure signaling and TURN endpoints without touching the binary.
 
-  Building (via build_msi.ps1 — do not invoke candle/light directly):
+  Building (via build_msi.ps1 - do not invoke candle/light directly):
     .\packaging\windows\build_msi.ps1
 
   Variables injected by build_msi.ps1:
-    $(var.Version)   — semver string, e.g. 1.2.3
-    $(var.BinDir)    — directory containing the compiled lowbandd.exe
+    $(var.Version)   - semver string, e.g. 1.2.3
+    $(var.BinDir)    - directory containing the compiled lowbandd.exe
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
      xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
@@ -51,7 +51,7 @@
         Platform="x64"
         Description="LowBand P2P remote-assist client $(var.Version)"
         Manufacturer="LowBand Project"
-        Comments="Silent enterprise installer — deploy via MDM or msiexec /qn"
+        Comments="Silent enterprise installer - deploy via MDM or msiexec /qn"
     />
 
     <!-- Single embedded cabinet (no external .cab needed for distribution) -->
@@ -70,9 +70,9 @@
 
     <!-- ── Directory layout ───────────────────────────────────────────────── -->
     <!--
-      %ProgramFiles%\LowBand\        — lowbandd.exe daemon binary
-      %ProgramData%\LowBand\         — SQLite stores, audit_log
-      %ProgramData%\LowBand\Logs\    — stdout/stderr log files
+      %ProgramFiles%\LowBand\        - lowbandd.exe daemon binary
+      %ProgramData%\LowBand\         - SQLite stores, audit_log
+      %ProgramData%\LowBand\Logs\    - stdout/stderr log files
     -->
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
@@ -87,7 +87,7 @@
 
     <!-- ── Feature ────────────────────────────────────────────────────────── -->
     <!--
-      Single feature — no optional components for MDM/silent deploy scenarios.
+      Single feature - no optional components for MDM/silent deploy scenarios.
       All files install unconditionally at Level="1".
     -->
     <Feature Id="ProductFeature" Title="LowBand" Level="1" Absent="disallow">
@@ -98,13 +98,13 @@
     <ComponentGroup Id="MainComponents">
 
       <!--
-        lowbandd.exe — core P2P remote-assist daemon.
+        lowbandd.exe - core P2P remote-assist daemon.
 
         Runs as NT SERVICE\LowBandDaemon (a Virtual Service Account).
         Virtual service accounts:
           - Created automatically by the Service Control Manager when the service
             is first started; no explicit user creation step is required.
-          - Named NT SERVICE\<ServiceName> — maps to a unique local identity.
+          - Named NT SERVICE\<ServiceName> - maps to a unique local identity.
           - Cannot be used to log on interactively or access network resources
             with their own credentials (principle of least privilege).
           - No password to rotate or manage.
@@ -118,7 +118,7 @@
         <!--
           ServiceInstall: registers lowbandd as an auto-start Win32 service.
           The Virtual Service Account (Account="NT SERVICE\LowBandDaemon")
-          requires no Password attribute — the SCM manages the credential.
+          requires no Password attribute - the SCM manages the credential.
 
           Arguments map to the same IPC/data-dir layout used on macOS:
             ipc-pipe flag   local named pipe (replaces Unix socket)
@@ -164,7 +164,7 @@
       </Component>
 
       <!--
-        %ProgramData%\LowBand\ — daemon data directory.
+        %ProgramData%\LowBand\ - daemon data directory.
         Grant the Virtual Service Account full control so it can create its
         SQLite stores and audit_log.  Administrators retain full control for
         log collection and forensic export.
@@ -185,7 +185,7 @@
       </Component>
 
       <!--
-        %ProgramData%\LowBand\Logs\ — daemon log output.
+        %ProgramData%\LowBand\Logs\ - daemon log output.
         Same ACL as the data directory; separate path keeps logs
         collectible without granting write access to the data store.
       -->
