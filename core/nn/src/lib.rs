@@ -2,6 +2,7 @@
 //!
 //! | Feature | Description |
 //! |---------|-------------|
+//! | 78 | ONNX Runtime hosting: [`runtime`] hosts models with CoreML / NNAPI / DirectML / CPU execution providers |
 //! | 79 | Gear availability: which neural gears exist is decided by [`capability_probe`] results at startup ([`gear_availability`]) |
 //! | 81 | Transport guard: [`model_watchdog`] ensures a stalled model never stalls the transport loop |
 //! | 82 | Head-gear gate: Gear A is rejected unless an NPU or spare CPU is available ([`head_gear_gate`]) |
@@ -14,6 +15,7 @@ pub mod eval_card;
 pub mod gear_availability;
 pub mod head_gear_gate;
 pub mod model_watchdog;
+pub mod runtime;
 pub mod warm_pool;
 
 pub use capability_probe::{CapabilityProbeResult, ExecutionProvider};
@@ -21,4 +23,5 @@ pub use eval_card::{eval_card, EvalCard, ModelId, MODEL_REGISTRY};
 pub use gear_availability::GearAvailability;
 pub use head_gear_gate::{head_gear_available, HeadGearCapability, CPU_HEADROOM_THRESHOLD_PCT};
 pub use model_watchdog::{InferenceTimeout, ModelWatchdog, INFERENCE_DEADLINE_MS};
+pub use runtime::{ModelRuntime, OnnxSession, ProviderConfig, SessionOptions};
 pub use warm_pool::{WarmEntry, WarmPool, WarmState, GEAR_A_MODELS};
