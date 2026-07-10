@@ -1,0 +1,179 @@
+# Build release binaries for every supported platform/arch and attach them,
+# with checksums and build-provenance attestations, to the GitHub release.
+#
+# Triggers on version tags (v1.2.3). Artifact naming matches
+# packaging/build-dist.sh: lowband-<version>-<target>.{tar.gz|zip}
+#
+# Code signing (Authenticode / Developer ID + notarization) is intentionally
+# not wired up yet — see docs/go-to-market.md §2. The MSI and pkg jobs run
+# unsigned (SKIP_SIGN/SKIP_NOTARIZE) and are best-effort until the signing
+# identities exist.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # The repo .cargo/config.toml carries a machine-specific host rustflags
+  # entry (-L/tmp/rust-libs); neutralize it on CI runners.
+  HOST_CFG: --config host.rustflags=[]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Install cargo-zigbuild (bundles zig)
+        run: pip3 install cargo-zigbuild
+      - name: Build
+        run: |
+          cargo zigbuild --release --target ${{ matrix.target }} $HOST_CFG \
+            -p lowbandd -p lowband-signaling
+      - name: Package
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          NAME=lowband-${VERSION:-dev}-${{ matrix.target }}
+          mkdir -p dist stage
+          cp target/${{ matrix.target }}/release/{lowbandd,lowband-signaling} stage/
+          tar czf dist/$NAME.tar.gz -C stage .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        target: [x86_64-pc-windows-msvc, aarch64-pc-windows-msvc]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: |
+          cargo build --release --target ${{ matrix.target }} --config "host.rustflags=[]" `
+            -p lowbandd -p lowband-signaling
+      - name: Package
+        run: |
+          $version = "$env:GITHUB_REF_NAME" -replace '^v',''
+          if (-not $version) { $version = "dev" }
+          $name = "lowband-$version-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path dist, stage | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/lowbandd.exe stage/
+          Copy-Item target/${{ matrix.target }}/release/lowband-signaling.exe stage/
+          Compress-Archive -Path stage/* -DestinationPath dist/$name.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+
+  # Best-effort until verified on a runner: unsigned MSI via the existing
+  # WiX script. Does not block the release if it fails.
+  build-windows-msi:
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msi
+      - name: Install WiX Toolset 3.x
+        run: choco install wixtoolset -y --no-progress
+      - name: Build unsigned MSI
+        run: |
+          $env:SKIP_SIGN = "1"
+          $env:VERSION = ("$env:GITHUB_REF_NAME" -replace '^v','')
+          if (-not $env:VERSION) { $env:VERSION = "0.1.0" }
+          ./packaging/windows/build_msi.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-msi
+          path: dist/*.msi
+
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build both architectures
+        run: |
+          cargo build --release --target aarch64-apple-darwin $HOST_CFG \
+            -p lowbandd -p lowband-signaling
+          cargo build --release --target x86_64-apple-darwin $HOST_CFG \
+            -p lowbandd -p lowband-signaling
+      - name: Package per-arch + universal
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${VERSION:-dev}
+          mkdir -p dist
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            mkdir -p stage-$target
+            cp target/$target/release/{lowbandd,lowband-signaling} stage-$target/
+            tar czf dist/lowband-$VERSION-$target.tar.gz -C stage-$target .
+          done
+          mkdir -p stage-universal
+          for bin in lowbandd lowband-signaling; do
+            lipo -create -output stage-universal/$bin \
+              target/aarch64-apple-darwin/release/$bin \
+              target/x86_64-apple-darwin/release/$bin
+          done
+          tar czf dist/lowband-$VERSION-universal-apple-darwin.tar.gz -C stage-universal .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-apple-darwin
+          path: dist/*
+
+  release:
+    needs: [build-linux, build-windows, build-macos, build-windows-msi]
+    # build-windows-msi is best-effort; publish as long as the binary jobs passed.
+    if: always() && !cancelled() && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum lowband-* > SHA256SUMS
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/lowband-*
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/lowband-*
+            dist/SHA256SUMS
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
