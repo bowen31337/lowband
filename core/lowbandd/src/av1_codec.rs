@@ -115,17 +115,44 @@ pub fn encode_tile(pixels: &[u8]) -> Vec<u8> {
 /// Decode an AV1 bitstream (from [`encode_tile`]) back to a 32×32 BGRA tile.
 #[cfg(feature = "av1")]
 pub fn decode_tile(data: &[u8]) -> Option<[u8; TILE_BYTES]> {
-    use dav1d::{Decoder, PlanarImageComponent};
+    use dav1d::{Decoder, PlanarImageComponent, Settings};
 
-    let mut dec = Decoder::new().ok()?;
-    dec.send_data(data.to_vec(), None, None, None).ok()?;
-    let pic = dec.get_picture().ok()?;
+    // Single-thread, minimum frame delay: a lone still-picture frame becomes
+    // available immediately rather than being buffered by frame threading
+    // (default settings make `get_picture` return `Again` for one frame).
+    let mut settings = Settings::new();
+    settings.set_n_threads(1);
+    settings.set_max_frame_delay(1);
+    let mut dec = Decoder::with_settings(&settings).ok()?;
 
+    match dec.send_data(data.to_vec(), None, None, None) {
+        Ok(()) => {}
+        Err(e) if e.is_again() => {} // data buffered as pending; drained below
+        Err(_) => return None,
+    }
+
+    // Drain: retry get_picture, pushing any pending data, until the frame
+    // arrives. Bounded to avoid an infinite loop on malformed input.
+    let mut pic = None;
+    for _ in 0..16 {
+        match dec.get_picture() {
+            Ok(p) => {
+                pic = Some(p);
+                break;
+            }
+            Err(e) if e.is_again() => {
+                let _ = dec.send_pending_data();
+            }
+            Err(_) => return None,
+        }
+    }
+    let pic = pic?;
+
+    let ys = pic.stride(PlanarImageComponent::Y) as usize;
+    let cs = pic.stride(PlanarImageComponent::U) as usize;
     let y = pic.plane(PlanarImageComponent::Y);
     let u = pic.plane(PlanarImageComponent::U);
     let v = pic.plane(PlanarImageComponent::V);
-    let ys = pic.stride(PlanarImageComponent::Y) as usize;
-    let cs = pic.stride(PlanarImageComponent::U) as usize;
     Some(yuv420_to_bgra(y.as_ref(), u.as_ref(), v.as_ref(), ys, cs))
 }
 

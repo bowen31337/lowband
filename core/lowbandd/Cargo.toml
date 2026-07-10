@@ -32,7 +32,7 @@ lowband-xfer = { path = "../xfer", features = ["hash"] }
 opus = { version = "0.3", optional = true }
 # rav1e: pure-Rust AV1 encoder (no C). dav1d: system libdav1d decoder.
 rav1e = { version = "0.8", optional = true, default-features = false }
-dav1d = { version = "0.10", optional = true }
+dav1d = { version = "0.11", optional = true }
 
 [dev-dependencies]
 axum = "0.7"
