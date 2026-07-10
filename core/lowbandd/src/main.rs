@@ -30,6 +30,9 @@ mod inbound;
 #[cfg(test)]
 mod ocr;
 mod picture;
+// Verification-only quality gates (SSIM / segmental SNR); compiled for tests.
+#[cfg(test)]
+mod quality;
 mod screen_transfer;
 mod session;
 mod stun;
