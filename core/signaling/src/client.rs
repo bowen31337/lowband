@@ -388,6 +388,40 @@ fn json_escape(s: &str) -> String {
     out
 }
 
+/// Scan a JSON string literal beginning at the opening quote of `s`.
+///
+/// Returns the unescaped value and the byte length consumed (including both
+/// quotes), or `None` if `s` does not start with `"` or the string is
+/// unterminated. This is the single source of truth for string decoding —
+/// both the scalar and array extractors build on it, so escape handling and
+/// element-boundary detection can never disagree.
+fn scan_json_string(s: &str) -> Option<(String, usize)> {
+    let mut chars = s.char_indices();
+    // Require an opening quote at index 0.
+    match chars.next() {
+        Some((_, '"')) => {}
+        _ => return None,
+    }
+    let mut out = String::new();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => return Some((out, i + 1)), // +1 past the closing quote
+            '\\' => match chars.next() {
+                Some((_, '"')) => out.push('"'),
+                Some((_, '\\')) => out.push('\\'),
+                Some((_, 'n')) => out.push('\n'),
+                Some((_, 'r')) => out.push('\r'),
+                Some((_, 't')) => out.push('\t'),
+                Some((_, '/')) => out.push('/'),
+                Some((_, other)) => out.push(other),
+                None => return None,
+            },
+            c => out.push(c),
+        }
+    }
+    None
+}
+
 /// Extract a string field's value, returning `None` for a missing key or a
 /// JSON `null`.  Handles the escape sequences `json_escape` produces.
 fn json_string_field(body: &str, key: &str) -> Option<String> {
@@ -396,25 +430,7 @@ fn json_string_field(body: &str, key: &str) -> Option<String> {
     if rest.starts_with("null") {
         return None;
     }
-    let rest = rest.strip_prefix('"')?;
-    let mut out = String::new();
-    let mut chars = rest.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => return Some(out),
-            '\\' => match chars.next()? {
-                '"' => out.push('"'),
-                '\\' => out.push('\\'),
-                'n' => out.push('\n'),
-                'r' => out.push('\r'),
-                't' => out.push('\t'),
-                '/' => out.push('/'),
-                other => out.push(other),
-            },
-            c => out.push(c),
-        }
-    }
-    None
+    scan_json_string(rest).map(|(s, _)| s)
 }
 
 fn json_u64_field(body: &str, key: &str) -> Option<u64> {
@@ -435,33 +451,25 @@ fn json_string_array_field(body: &str, key: &str) -> Vec<String> {
     if !rest.starts_with('[') {
         return Vec::new();
     }
-    let end = match rest.find(']') {
-        Some(e) => e,
-        None => return Vec::new(),
-    };
-    let inner = &rest[1..end];
+    // Scan elements left-to-right: each string is decoded by `scan_json_string`,
+    // which reports exactly how many bytes it consumed, so we resume right after
+    // its closing quote. No reliance on `find(']')` (which a `]` inside a string
+    // value would break) or byte/char-offset juggling.
     let mut out = Vec::new();
-    let mut chars = inner.char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
-        if c == '"' {
-            // Reuse the scalar extractor from this opening quote.
-            if let Some(s) = json_string_field(&format!("\"x\":{}", &inner[i..]), "x") {
-                let consumed = s.len();
-                out.push(s);
-                // Advance past the closing quote of this element.
-                for (j, cc) in inner[i + 1..].char_indices() {
-                    if cc == '"' && j >= consumed.saturating_sub(1) {
-                        while let Some(&(k, _)) = chars.peek() {
-                            if k <= i + 1 + j {
-                                chars.next();
-                            } else {
-                                break;
-                            }
-                        }
-                        break;
-                    }
+    let mut pos = 1; // just past '['
+    let bytes = rest.as_bytes();
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b' ' | b'\t' | b'\n' | b'\r' | b',' => pos += 1,
+            b']' => break,
+            b'"' => match scan_json_string(&rest[pos..]) {
+                Some((s, consumed)) => {
+                    out.push(s);
+                    pos += consumed;
                 }
-            }
+                None => break, // unterminated string — stop
+            },
+            _ => break, // non-string element — not our shape
         }
     }
     out
@@ -579,6 +587,22 @@ mod tests {
         assert!(json_string_array_field(body, "candidates").len() == 3);
         let empty = r#"{"candidates":[]}"#;
         assert!(json_string_array_field(empty, "candidates").is_empty());
+    }
+
+    #[test]
+    fn string_array_handles_brackets_and_escapes_in_values() {
+        // A `]` and an escaped quote inside element strings previously broke
+        // the parser (it truncated on the first `]`). Both must round-trip.
+        let body = r#"{"xs":["a]b","c\"d","e,f"],"next":1}"#;
+        assert_eq!(json_string_array_field(body, "xs"), vec!["a]b", "c\"d", "e,f"]);
+    }
+
+    #[test]
+    fn string_array_stops_at_its_own_closing_bracket() {
+        // A later array under a different key must not bleed in.
+        let body = r#"{"a":["x"],"b":["y","z"]}"#;
+        assert_eq!(json_string_array_field(body, "a"), vec!["x"]);
+        assert_eq!(json_string_array_field(body, "b"), vec!["y", "z"]);
     }
 
     #[test]
