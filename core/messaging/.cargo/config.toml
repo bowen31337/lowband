@@ -1,0 +1,9 @@
+[build]
+target = "x86_64-unknown-linux-gnu"
+
+[target.x86_64-unknown-linux-gnu]
+linker = "rust-lld"
+rustflags = [
+  "-C", "linker-flavor=gnu-lld",
+  "-C", "link-args=-L/tmp/rust-libs -L/usr/lib/x86_64-linux-gnu -L/lib/x86_64-linux-gnu",
+]

@@ -13,6 +13,7 @@
 //! | 32  | System persists session metadata to the session_records store for later export |
 
 pub mod audit;
+pub mod channel;
 pub mod chat;
 pub mod clipboard;
 pub mod grants;
@@ -21,6 +22,7 @@ pub mod qos_observer;
 pub mod session_records;
 
 pub use audit::{AuditEntry, AuditLog};
+pub use channel::{ChannelError, Message, ReliableChannel};
 pub use chat::{ChatError, ChatMessage, ChatSession, CHAT_MAX_TEXT_BYTES, SURVIVAL_TIER_BPS};
 pub use clipboard::{
     ClipboardError, ClipboardGrant, ClipboardSession,

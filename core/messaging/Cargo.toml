@@ -5,3 +5,4 @@ edition = "2021"
 description = "LowBand clipboard sync and in-session chat — capability-gated messaging plugin"
 
 [dependencies]
+zstd = "0.13"

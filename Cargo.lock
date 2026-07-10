@@ -654,6 +654,9 @@ version = "0.1.0"
 [[package]]
 name = "lowband-messaging"
 version = "0.1.0"
+dependencies = [
+ "zstd",
+]
 
 [[package]]
 name = "lowband-nn"
