@@ -24,13 +24,17 @@ tests — doc comments and type stubs do not count.
 > present are *not code*: (a) **production-scale trained weights** (a deep
 > vocoder/talking-head net needs GPU training on large corpora — the interim
 > trained gear + runtime is the pipeline they slot into); and (b) branded
-> **VMAF** is now **integrated via the real tool** — `vmaf_cli.rs` drives the
-> actual Netflix/libvmaf `vmaf` binary as a subprocess (writes YUV, parses the
-> JSON score), and the `vmaf` CI job builds the tool from source and scores a
-> DCT-decoded frame. (FFI was the wrong lens; a subprocess sidesteps the
-> missing Rust binding.) **ViSQOL** alone stays out — Bazel/C++, no apt package
-> or binding — its objective basis covered by the always-on segmental-SNR
-> metric. So the only genuinely-absent item is production-scale trained weights.
+> **VMAF** is **integrated via the real tool and CI-verified green** — the
+> `vmaf` job builds the actual Netflix/libvmaf `vmaf` binary from source and
+> `vmaf_cli.rs` drives it as a subprocess to score a DCT-decoded frame. (FFI
+> was the wrong lens; a subprocess sidesteps the missing Rust binding.)
+> **ViSQOL** alone stays out — Bazel/C++, no apt package or binding — its
+> objective basis covered by the always-on segmental-SNR metric.
+>
+> **Final tally: seven CI jobs green** (test, voice-opus, camera-av1, audio-io,
+> neural, vmaf). The single genuinely-absent item is **production-scale trained
+> neural weights** — a GPU-days + speech-corpora training run, not code. The
+> runtime, a trained interim model, and the training method are all in-repo.
 >
 > **Update 2 (production codecs + device I/O).** All four buildable production
 > integrations the PRD names are implemented and **CI-verified green** against
