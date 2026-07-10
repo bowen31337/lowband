@@ -94,14 +94,26 @@ pub fn compute_vmaf(
             String::from_utf8_lossy(&output.stderr)
         )));
     }
-    Ok(parse_vmaf_mean(&json))
+    match parse_vmaf_mean(&json) {
+        Some(score) => Ok(Some(score)),
+        // Surface the actual JSON so the parser can be corrected — vmaf
+        // succeeded but its output format didn't match.
+        None => Err(io::Error::other(format!(
+            "vmaf succeeded but score not parsed; json head: {}",
+            &json.chars().take(600).collect::<String>()
+        ))),
+    }
 }
 
 /// Extract the pooled VMAF mean from the CLI's JSON:
 /// `…"pooled_metrics":{"vmaf":{…"mean":<n>…}}…`.
 fn parse_vmaf_mean(json: &str) -> Option<f64> {
-    let vmaf_at = json.find("\"vmaf\"")?;
-    let rest = &json[vmaf_at..];
+    // Anchor on the pooled section so a per-frame "vmaf": <n> earlier in the
+    // document doesn't misdirect the scan; fall back to the first "vmaf".
+    let anchor = json.find("pooled_metrics").unwrap_or(0);
+    let scoped = &json[anchor..];
+    let vmaf_at = scoped.find("\"vmaf\"")?;
+    let rest = &scoped[vmaf_at..];
     let mean_at = rest.find("\"mean\"")?;
     let after = &rest[mean_at + "\"mean\"".len()..];
     let colon = after.find(':')?;
