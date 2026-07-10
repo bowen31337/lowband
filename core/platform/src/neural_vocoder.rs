@@ -1,4 +1,4 @@
-//! Neural-vocoder audio gear selection — Feature 54.
+//! Neural-vocoder audio gear selection — Feature 54 / 83.
 //!
 //! When the governor declares Survival tier and a hardware NPU is detected,
 //! the audio pipeline switches from Opus to a SoundStream-lineage neural
@@ -18,16 +18,18 @@
 //! as appropriate to the tier) regardless of NPU availability; the neural
 //! vocoder is a survival-only optimisation.
 //!
-//! # NPU probe
+//! # NPU probe (Feature 83)
 //!
-//! [`NpuCapability::probe`] detects whether a hardware neural accelerator is
-//! present at startup.  The full ONNX Runtime execution-provider probe
-//! (Feature 78) lives in the `nn` crate (Phase 4).  This module provides a
-//! lightweight `cfg`-gated stub: on Apple Silicon (aarch64 macOS / iOS) the
-//! Neural Engine is always present; on all other platforms the result is
-//! conservatively [`Absent`](NpuCapability::Absent) until Phase 4 wires in
-//! the full provider query.
+//! [`NpuCapability::probe`] gates the neural vocoder by delegating to
+//! [`lowband_nn::capability_probe::probe`].  The `nn` crate queries available
+//! ONNX Runtime execution providers (CoreML on Apple platforms, NNAPI on
+//! Android, DirectML on Windows, CPU-only elsewhere) and reports whether any
+//! hardware neural accelerator is present.  When
+//! [`CapabilityProbeResult::has_neural_accelerator`] is `true` the probe
+//! returns [`NpuCapability::Present`]; otherwise [`NpuCapability::Absent`] and
+//! the vocoder remains disabled regardless of tier.
 
+use lowband_nn::capability_probe::probe as nn_capability_probe;
 use crate::tier::TierState;
 
 /// Lower bound of the neural-vocoder target bitrate (bps).
@@ -57,24 +59,20 @@ pub enum NpuCapability {
 impl NpuCapability {
     /// Probe for a hardware neural accelerator at startup.
     ///
-    /// On Apple Silicon (aarch64 macOS / iOS) the Neural Engine is always
-    /// present, so the probe returns [`Present`](Self::Present) immediately
-    /// with no I/O or memory allocation.  On all other platforms this returns
-    /// [`Absent`](Self::Absent) conservatively; the full ONNX Runtime
-    /// execution-provider query (Feature 78, `nn::capability_probe`) will
-    /// replace this stub in Phase 4.
+    /// Delegates to [`lowband_nn::capability_probe::probe`] (Feature 83) to
+    /// query the available ONNX Runtime execution providers.  Returns
+    /// [`Present`](Self::Present) when
+    /// [`CapabilityProbeResult::has_neural_accelerator`] is `true` (CoreML on
+    /// Apple platforms, NNAPI on Android, DirectML on Windows); returns
+    /// [`Absent`](Self::Absent) when only the CPU provider is available.
     ///
     /// **Non-blocking** — does not load any model or allocate GPU/NPU memory.
     pub fn probe() -> Self {
-        // Apple Silicon: Neural Engine is always present on aarch64 macOS (M1+)
-        // and all modern iOS devices.  Report Present without any I/O.
-        #[cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "ios")))]
-        return Self::Present;
-
-        // All other platforms: conservatively absent until the full ONNX
-        // Runtime provider query (nn::capability_probe, Phase 4) is wired in.
-        #[allow(unreachable_code)]
-        Self::Absent
+        if nn_capability_probe().has_neural_accelerator {
+            Self::Present
+        } else {
+            Self::Absent
+        }
     }
 }
 
