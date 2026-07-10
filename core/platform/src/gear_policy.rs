@@ -1,10 +1,20 @@
-//! Thermal gear-degradation policy and display resolution ladder — Features 129, 130, 131, 161.
+//! Strict-priority budget allocator and thermal gear-degradation policy — Features 69, 129, 130, 131, 161.
 //!
-//! The governor calls [`GearConstraints::from_thermal`] at each 10 Hz tick
-//! and applies the returned constraints when it calls `set_gear()` and
-//! `set_budget()` on each stream encoder.
+//! # Strict-priority budget allocation (Feature 69)
 //!
-//! # Degradation order
+//! [`allocate`] divides the congestion controller's single send-rate estimate
+//! across streams in a fixed priority order so that voice is always funded
+//! before any other stream:
+//!
+//! ```text
+//! audio (floor 6 kbps) → input/cursor → screen coarse → camera → screen refinement → xfer
+//! ```
+//!
+//! [`AUDIO_FLOOR_BPS`] (`6_000`) is the hard floor: `audio_bps` is always ≥ 6 kbps
+//! regardless of total bandwidth or thermal conditions.  Downstream streams
+//! receive whatever headroom remains after each higher-priority stream is funded.
+//!
+//! # Degradation order (Feature 161)
 //!
 //! When thermal pressure rises the governor sheds load in the following order,
 //! chosen so that the highest-CPU-cost streams are dropped first:
@@ -103,9 +113,11 @@ pub fn gear_b_per_frame_byte_cap(camera_bps: u32, fps: u32) -> u32 {
 }
 
 /// The lowest bit rate, in bits per second, that the audio stream must always
-/// receive regardless of thermal or bandwidth conditions.
+/// receive regardless of thermal or bandwidth conditions (Feature 69).
 ///
-/// Architecture §12: "audio (floor 6 kbps)".
+/// [`allocate`] guarantees `audio_bps >= AUDIO_FLOOR_BPS` in every call,
+/// even when `total_bps < AUDIO_FLOOR_BPS`.  Voice degrades last and never
+/// gaps — a hard invariant of the strict-priority allocation scheme.
 pub const AUDIO_FLOOR_BPS: u32 = 6_000;
 
 /// A display resolution rung on the [`RESOLUTION_LADDER`] (Feature 130).
@@ -427,14 +439,15 @@ pub struct StreamBudgets {
 
 const INPUT_FLOOR_BPS: u32 = 3_000;
 
-/// Allocate `total_bps` across streams under the given constraints.
+/// Allocate `total_bps` across streams under the given constraints (Feature 69).
 ///
-/// Implements the strict-priority allocation from architecture §12:
+/// Implements the strict-priority allocation with `audio_floor = 6 kbps`:
 /// audio → input/cursor → screen coarse → camera → screen refinement → xfer.
 ///
-/// The `audio_bps` field in the returned [`StreamBudgets`] is always at least
-/// [`AUDIO_FLOOR_BPS`], even if `total_bps` is less — the caller must ensure
-/// the link can carry at least the survival tier minimum before calling this.
+/// Each stream is funded in priority order; a lower-priority stream only
+/// receives bits that remain after all higher-priority streams are satisfied.
+/// [`AUDIO_FLOOR_BPS`] (`6_000`) is the unconditional audio minimum — it is
+/// applied even when `total_bps < AUDIO_FLOOR_BPS` so that voice never gaps.
 pub fn allocate(total_bps: u32, constraints: &GearConstraints) -> StreamBudgets {
     let mut remaining = total_bps;
 
