@@ -1,0 +1,13 @@
+[package]
+name = "shell-probe"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal UI-shell stand-in: connects to the lowbandd IPC socket and prints governor events"
+publish = false
+
+[dependencies]
+lowband-platform = { path = "../../../../core/platform" }
+
+# Deliberately not a member of the root workspace — this is agent tooling,
+# not a shippable crate.
+[workspace]
