@@ -305,7 +305,9 @@ mod platform {
 
     // ── Flat C entry points ───────────────────────────────────────────────────
 
-    #[link(name = "DXGI")]
+    // Lowercase: MSVC's linker is case-insensitive, but cross-linking with
+    // mingw/zig import libraries on a case-sensitive filesystem is not.
+    #[link(name = "dxgi")]
     extern "system" {
         fn CreateDXGIFactory1(riid: *const Guid, pp_factory: *mut *mut c_void) -> i32;
     }

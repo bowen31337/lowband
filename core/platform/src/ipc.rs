@@ -693,9 +693,12 @@ impl IpcServer {
     pub fn bind(_path: &Path) -> io::Result<Self> {
         use std::os::windows::io::FromRawHandle;
         use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        // windows-sys 0.59 defines PIPE_ACCESS_DUPLEX (a FILE_FLAGS_AND_ATTRIBUTES
+        // value) under Storage::FileSystem, not System::Pipes.
+        use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
         use windows_sys::Win32::System::Pipes::{
-            ConnectNamedPipe, CreateNamedPipeW, PIPE_ACCESS_DUPLEX, PIPE_READMODE_BYTE,
-            PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+            ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
+            PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
         };
 
         let clients: Arc<Mutex<Vec<mpsc::SyncSender<Vec<u8>>>>> =
@@ -802,7 +805,7 @@ impl IpcClient {
                 std::ptr::null(),
                 OPEN_EXISTING,
                 0,
-                0,
+                std::ptr::null_mut(), // hTemplateFile: HANDLE is *mut c_void in windows-sys 0.59
             )
         };
         if handle == INVALID_HANDLE_VALUE {

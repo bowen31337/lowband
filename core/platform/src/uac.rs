@@ -69,7 +69,7 @@ mod win_impl {
         let mut info: SHELLEXECUTEINFOW = unsafe { mem::zeroed() };
         info.cbSize     = mem::size_of::<SHELLEXECUTEINFOW>() as u32;
         info.fMask      = SEE_MASK_NOCLOSEPROCESS;
-        info.hwnd       = 0;  // HWND_DESKTOP — no parent window
+        info.hwnd       = std::ptr::null_mut();  // HWND_DESKTOP — no parent window
         info.lpVerb     = verb.as_ptr();
         info.lpFile     = file.as_ptr();
         info.lpParameters = params.as_ptr();
@@ -84,7 +84,7 @@ mod win_impl {
 
         // Wait for the helper process to complete.
         let proc: HANDLE = info.hProcess;
-        if proc != 0 {
+        if !proc.is_null() {
             unsafe {
                 WaitForSingleObject(proc, INFINITE);
                 CloseHandle(proc);

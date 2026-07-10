@@ -39,3 +39,4 @@ coverage/
 *.tmp
 *.orig
 packaging/macos/.build/
+.intentionally-empty-file.o
