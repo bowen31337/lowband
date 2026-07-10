@@ -112,6 +112,7 @@ const KIND_GEAR: u8 = 2;
 const KIND_ELEV_REQ: u8 = 3;
 /// UI shell → Daemon: UAC prompt outcome.
 const KIND_ELEV_RESP: u8 = 4;
+const KIND_PANIC: u8 = 5;
 
 // ── Public event enum ─────────────────────────────────────────────────────────
 
@@ -147,6 +148,15 @@ pub enum IpcEvent {
     /// message — even on cancellation (`Denied`) or when the shell is headless
     /// (`Unavailable`).  Never swallowed silently.
     ElevationResponse { reason: EscalationReason, outcome: ElevationOutcome },
+
+    /// The assisted user's panic key fired: the control grant is severed
+    /// (FR-5).  Daemon → UI shell so the indicator flips instantly; also
+    /// emitted when a remote peer's `PanicNotice` arrives over the wire.
+    ///
+    /// `seq` is the panic sequence number from
+    /// `lowband_messaging::panic_key::PanicNotice` — shells use it to
+    /// distinguish a new panic from a retransmit.
+    PanicFired { seq: u32 },
 }
 
 // ── FlatBuffer helpers ─────────────────────────────────────────────────────────
@@ -310,6 +320,17 @@ fn encode_gear(constraints: &GearConstraints) -> Vec<u8> {
     fbb.finished_data().to_vec()
 }
 
+fn encode_panic(seq: u32) -> Vec<u8> {
+    let mut fbb = FlatBufferBuilder::with_capacity(16);
+    let start = fbb.start_table();
+    fbb.push_slot::<u32>(voff(0), seq, 0);
+    let o = fbb.end_table(start);
+    let root: flatbuffers::WIPOffset<flatbuffers::ForwardsUOffset<()>> =
+        flatbuffers::WIPOffset::new(o.value());
+    fbb.finish(root, None);
+    fbb.finished_data().to_vec()
+}
+
 fn encode_elev_req(reason: EscalationReason) -> Vec<u8> {
     let mut fbb = FlatBufferBuilder::with_capacity(16);
     let start = fbb.start_table();
@@ -347,6 +368,7 @@ pub fn encode_event(event: &IpcEvent) -> Vec<u8> {
         IpcEvent::ElevationResponse { reason, outcome } => {
             (KIND_ELEV_RESP, encode_elev_resp(*reason, outcome))
         }
+        IpcEvent::PanicFired { seq } => (KIND_PANIC, encode_panic(*seq)),
     };
 
     let body_len = (1u32 + fb.len() as u32).to_le_bytes();
@@ -472,6 +494,7 @@ fn decode_fb(kind: u8, fb: &[u8]) -> Option<IpcEvent> {
             reason: reason_from_u8(t.u8_at(0)),
             outcome: outcome_from_u8(t.u8_at(1)),
         }),
+        KIND_PANIC => Some(IpcEvent::PanicFired { seq: t.u32_at(0) }),
         _ => None,
     }
 }
@@ -1021,6 +1044,18 @@ mod tests {
             assert!(!outcome.is_granted(), "Denied must not be Granted after roundtrip");
         } else {
             panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn panic_fired_roundtrip_preserves_seq() {
+        for seq in [0u32, 1, 7, u32::MAX] {
+            let ev = roundtrip(IpcEvent::PanicFired { seq });
+            if let IpcEvent::PanicFired { seq: got } = ev {
+                assert_eq!(got, seq, "PanicFired seq mismatch");
+            } else {
+                panic!("wrong variant for PanicFired(seq={seq})");
+            }
         }
     }
 

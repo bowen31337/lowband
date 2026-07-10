@@ -74,6 +74,91 @@ pub struct PanicEffect {
     pub transport_up: bool,
 }
 
+/// Wire notice that the remote peer's panic key fired — FR-5 "both sides".
+///
+/// The assisted side emits this on the input/control channel (LBTP channel
+/// 3, reliable, highest priority after audio) the moment
+/// [`PanicController::fire_panic_with_notice`] runs; the controller side
+/// feeds it to [`PanicNoticeReceiver::apply`], which severs its own mirror
+/// of the control grant.  Because the notice rides the priority channel it
+/// is never queued behind media, keeping the far-side sever inside the
+/// [`PANIC_INJECTION_BLOCK_DEADLINE_MS`] budget at any tier.
+///
+/// # Wire format (5 bytes)
+///
+/// ```text
+/// [1 byte tag 0x50 'P'][4 bytes LE sequence number]
+/// ```
+///
+/// The sequence number increments per panic activation within a session so
+/// retransmits (the channel is reliable, but the sender may re-emit on
+/// migration) deduplicate on the receiver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PanicNotice {
+    pub seq: u32,
+}
+
+/// Wire tag byte identifying a panic notice on the control channel.
+pub const PANIC_NOTICE_TAG: u8 = 0x50;
+
+/// Encoded size of a [`PanicNotice`] in bytes.
+pub const PANIC_NOTICE_LEN: usize = 5;
+
+impl PanicNotice {
+    pub fn encode(&self) -> [u8; PANIC_NOTICE_LEN] {
+        let mut buf = [0u8; PANIC_NOTICE_LEN];
+        buf[0] = PANIC_NOTICE_TAG;
+        buf[1..].copy_from_slice(&self.seq.to_le_bytes());
+        buf
+    }
+
+    /// Decode a notice from `buf`; `None` when the tag or length is wrong.
+    pub fn decode(buf: &[u8]) -> Option<Self> {
+        if buf.len() != PANIC_NOTICE_LEN || buf[0] != PANIC_NOTICE_TAG {
+            return None;
+        }
+        Some(Self { seq: u32::from_le_bytes(buf[1..].try_into().ok()?) })
+    }
+}
+
+/// Controller-side (technician) receiver for remote panic notices.
+///
+/// Applies each *new* notice exactly once: the local mirror of the control
+/// grant is severed and the panic state recorded, while retransmits of an
+/// already-applied sequence are ignored.
+#[derive(Debug, Default)]
+pub struct PanicNoticeReceiver {
+    last_seq: Option<u32>,
+}
+
+impl PanicNoticeReceiver {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Apply `notice` to this side's session state.
+    ///
+    /// Returns `true` when the notice was new and control was severed,
+    /// `false` for a duplicate/stale retransmit (no state change).
+    ///
+    /// Mirrors [`PanicController::fire_panic`]: the control grant is revoked
+    /// synchronously and the transport stays up so the call continues.
+    pub fn apply(
+        &mut self,
+        notice: PanicNotice,
+        control: &mut ControlSession,
+        panic: &mut PanicController,
+    ) -> bool {
+        if self.last_seq.is_some_and(|last| notice.seq <= last) {
+            return false;
+        }
+        self.last_seq = Some(notice.seq);
+        control.set_grant(None);
+        panic.panic_fired = true;
+        true
+    }
+}
+
 /// Panic-key controller.
 ///
 /// Manages the `transport_up` liveness flag and the `panic_fired` status
@@ -91,12 +176,14 @@ pub struct PanicEffect {
 pub struct PanicController {
     transport_up: bool,
     panic_fired: bool,
+    /// Sequence number of the next outbound [`PanicNotice`].
+    next_seq: u32,
 }
 
 impl PanicController {
     /// Create a controller in the idle (no active session) state.
     pub fn new() -> Self {
-        Self { transport_up: false, panic_fired: false }
+        Self { transport_up: false, panic_fired: false, next_seq: 1 }
     }
 
     /// Signal that the LBTP connection was established (`up = true`) or
@@ -141,6 +228,25 @@ impl PanicController {
         self.panic_fired = true;
         control.set_grant(None);
         PanicEffect { injection_revoked: true, transport_up: true }
+    }
+
+    /// Activate the panic key AND produce the wire notice for the peer.
+    ///
+    /// Same local semantics as [`fire_panic`](Self::fire_panic); additionally
+    /// returns the [`PanicNotice`] the caller must transmit on the control
+    /// channel so the far side severs too (FR-5 "both sides < 50 ms").
+    /// `None` when the transport is down (no session, nothing to notify).
+    pub fn fire_panic_with_notice(
+        &mut self,
+        control: &mut ControlSession,
+    ) -> (PanicEffect, Option<PanicNotice>) {
+        let effect = self.fire_panic(control);
+        if !effect.injection_revoked {
+            return (effect, None);
+        }
+        let notice = PanicNotice { seq: self.next_seq };
+        self.next_seq = self.next_seq.wrapping_add(1);
+        (effect, Some(notice))
     }
 
     /// Clear the `panic_fired` flag (e.g. the assisted user re-consented after
@@ -344,6 +450,91 @@ mod tests {
         let e = PanicEffect { injection_revoked: true, transport_up: true };
         let _e2 = e;
         let _e3 = e;
+    }
+
+    // ── PanicNotice wire format ───────────────────────────────────────────────
+
+    #[test]
+    fn notice_roundtrips_over_wire() {
+        for seq in [0u32, 1, 42, u32::MAX] {
+            let n = PanicNotice { seq };
+            assert_eq!(PanicNotice::decode(&n.encode()), Some(n));
+        }
+    }
+
+    #[test]
+    fn notice_decode_rejects_bad_tag_and_length() {
+        assert_eq!(PanicNotice::decode(&[0x51, 0, 0, 0, 0]), None, "wrong tag");
+        assert_eq!(PanicNotice::decode(&[0x50, 0, 0, 0]), None, "short");
+        assert_eq!(PanicNotice::decode(&[0x50, 0, 0, 0, 0, 0]), None, "long");
+        assert_eq!(PanicNotice::decode(&[]), None, "empty");
+    }
+
+    // ── Cross-network propagation (FR-5 "both sides") ────────────────────────
+
+    #[test]
+    fn fire_panic_with_notice_produces_transmittable_notice() {
+        let mut ctrl = active_control();
+        let mut pc = PanicController::new();
+        pc.set_transport_up(true);
+
+        let (effect, notice) = pc.fire_panic_with_notice(&mut ctrl);
+        assert!(effect.injection_revoked);
+        assert_eq!(notice, Some(PanicNotice { seq: 1 }));
+
+        // A second activation gets a fresh sequence number.
+        let (_, notice2) = pc.fire_panic_with_notice(&mut ctrl);
+        assert_eq!(notice2, Some(PanicNotice { seq: 2 }));
+    }
+
+    #[test]
+    fn no_notice_when_transport_down() {
+        let mut ctrl = active_control();
+        let mut pc = PanicController::new();
+        let (effect, notice) = pc.fire_panic_with_notice(&mut ctrl);
+        assert!(!effect.injection_revoked);
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn remote_notice_severs_controller_side() {
+        // Assisted side fires…
+        let mut assisted_ctrl = active_control();
+        let mut assisted_pc = PanicController::new();
+        assisted_pc.set_transport_up(true);
+        let (_, notice) = assisted_pc.fire_panic_with_notice(&mut assisted_ctrl);
+
+        // …the notice crosses the wire…
+        let wire = notice.unwrap().encode();
+        let received = PanicNotice::decode(&wire).unwrap();
+
+        // …and the controller side severs its own grant mirror.
+        let mut tech_ctrl = active_control();
+        let mut tech_pc = PanicController::new();
+        tech_pc.set_transport_up(true);
+        let mut rx = PanicNoticeReceiver::new();
+
+        assert!(rx.apply(received, &mut tech_ctrl, &mut tech_pc));
+        assert_eq!(tech_ctrl.apply_event(), Err(CapabilityError::NoActiveGrant));
+        assert!(tech_pc.panic_fired());
+        assert!(tech_pc.transport_up(), "call must continue on the far side too");
+    }
+
+    #[test]
+    fn retransmitted_notice_is_deduplicated() {
+        let mut ctrl = active_control();
+        let mut pc = PanicController::new();
+        pc.set_transport_up(true);
+        let mut rx = PanicNoticeReceiver::new();
+        let notice = PanicNotice { seq: 3 };
+
+        assert!(rx.apply(notice, &mut ctrl, &mut pc), "first delivery applies");
+        assert!(!rx.apply(notice, &mut ctrl, &mut pc), "retransmit ignored");
+        assert!(
+            !rx.apply(PanicNotice { seq: 2 }, &mut ctrl, &mut pc),
+            "stale (reordered) notice ignored"
+        );
+        assert!(rx.apply(PanicNotice { seq: 4 }, &mut ctrl, &mut pc), "new panic applies");
     }
 
     // ── Narrative: Feature 30 end-to-end scenario ─────────────────────────────

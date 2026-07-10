@@ -5,4 +5,5 @@ edition = "2021"
 description = "LowBand clipboard sync and in-session chat — capability-gated messaging plugin"
 
 [dependencies]
+ed25519-dalek = { version = "2", default-features = false, features = ["fast", "std"] }
 zstd = "0.13"

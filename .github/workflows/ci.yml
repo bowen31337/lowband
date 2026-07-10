@@ -1,0 +1,26 @@
+# The PRD (§13) declares the bench suite the single source of truth for
+# every quantitative bar — this workflow is what actually makes that true.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: Workspace tests (unit + bench gates + e2e)
+        # PATH: the repo vendors rust-lld in bin/ for the musl default target.
+        run: |
+          export PATH="$PWD/bin:$PATH"
+          cargo test --workspace

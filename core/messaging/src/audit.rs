@@ -199,6 +199,99 @@ impl AuditLog {
         let json = self.export_json();
         std::fs::write(path, json.as_bytes())
     }
+
+    /// Serialise the log as JSON and sign it with the daemon's ed25519
+    /// identity key — FR-12 non-repudiation.
+    ///
+    /// The keyed hash chain protecting individual entries is symmetric, so
+    /// either peer could forge it; this export layer adds an asymmetric
+    /// signature that only the holder of `signing_key` can produce.  The
+    /// signature covers the canonical payload — everything before the
+    /// `,"signature":` marker — so any post-export edit to entries, chain
+    /// head, or signer key invalidates it.
+    ///
+    /// Format:
+    /// ```text
+    /// {"entries":[…],"signer_pubkey":"<hex32>","signature":"<hex64>"}
+    /// ```
+    pub fn export_signed_json(&self, signing_key: &[u8; 32]) -> String {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let key = SigningKey::from_bytes(signing_key);
+        let pubkey_hex: String =
+            key.verifying_key().to_bytes().iter().map(|b| format!("{b:02x}")).collect();
+
+        let mut payload = self.export_json();
+        // Splice the signer key into the payload (inside the signed region).
+        payload.truncate(payload.len() - 1); // drop trailing '}'
+        payload.push_str(&format!(",\"signer_pubkey\":\"{pubkey_hex}\""));
+
+        let sig = key.sign(payload.as_bytes());
+        let sig_hex: String = sig.to_bytes().iter().map(|b| format!("{b:02x}")).collect();
+        format!("{payload},\"signature\":\"{sig_hex}\"}}")
+    }
+
+    /// Write the ed25519-signed JSON export to `path`.
+    pub fn export_signed_to_file(
+        &self,
+        path: &std::path::Path,
+        signing_key: &[u8; 32],
+    ) -> std::io::Result<()> {
+        std::fs::write(path, self.export_signed_json(signing_key).as_bytes())
+    }
+
+    /// Verify a signed export produced by [`AuditLog::export_signed_json`].
+    ///
+    /// Splits the document at the `,"signature":` marker, recovers the
+    /// signer's public key from the payload, and checks the ed25519
+    /// signature over the payload bytes.  Returns `false` for malformed
+    /// documents, unknown/edited signer keys, or any payload tampering.
+    ///
+    /// Callers with a trusted key on file should also compare
+    /// `expected_signer` — a self-consistent document signed by an
+    /// *attacker's* key still verifies structurally.
+    pub fn verify_signed_export(document: &str, expected_signer: Option<&[u8; 32]>) -> bool {
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+        const SIG_MARKER: &str = ",\"signature\":\"";
+        const KEY_MARKER: &str = "\"signer_pubkey\":\"";
+
+        let Some(sig_at) = document.rfind(SIG_MARKER) else { return false };
+        let payload = &document[..sig_at];
+        let sig_hex = &document[sig_at + SIG_MARKER.len()..];
+        let Some(sig_hex) = sig_hex.strip_suffix("\"}") else { return false };
+
+        let Some(key_at) = payload.rfind(KEY_MARKER) else { return false };
+        let key_hex = &payload[key_at + KEY_MARKER.len()..];
+        let Some(key_hex) = key_hex.strip_suffix('"') else { return false };
+
+        let (Some(sig_bytes), Some(key_bytes)) =
+            (hex_decode::<64>(sig_hex), hex_decode::<32>(key_hex))
+        else {
+            return false;
+        };
+        if expected_signer.is_some_and(|expected| expected != &key_bytes) {
+            return false;
+        }
+
+        let Ok(verifying_key) = VerifyingKey::from_bytes(&key_bytes) else { return false };
+        verifying_key.verify(payload.as_bytes(), &Signature::from_bytes(&sig_bytes)).is_ok()
+    }
+}
+
+/// Decode exactly `N` bytes of lowercase/uppercase hex; `None` on any error.
+fn hex_decode<const N: usize>(s: &str) -> Option<[u8; N]> {
+    if s.len() != N * 2 || !s.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; N];
+    let bytes = s.as_bytes();
+    for (i, slot) in out.iter_mut().enumerate() {
+        let hi = (bytes[i * 2] as char).to_digit(16)?;
+        let lo = (bytes[i * 2 + 1] as char).to_digit(16)?;
+        *slot = ((hi << 4) | lo) as u8;
+    }
+    Some(out)
 }
 
 // ── Keyed hash (pure-Rust SipHash-2-4 → 256-bit) ─────────────────────────────
@@ -342,6 +435,83 @@ mod tests {
     use super::*;
 
     const TEST_KEY: [u8; 32] = *b"audit-test-key-for-unit-tests-xx";
+    const SIGNING_KEY: [u8; 32] = *b"ed25519-identity-key-32-bytes-ok";
+
+    fn sample_log() -> AuditLog {
+        let mut log = AuditLog::new(TEST_KEY);
+        log.append("view_granted", Some("view"), 1000);
+        log.append("control_granted", Some("control"), 1001);
+        log.append("session_ended", None, 1002);
+        log
+    }
+
+    // ── ed25519 signed export (FR-12 non-repudiation) ─────────────────────────
+
+    #[test]
+    fn signed_export_verifies() {
+        let doc = sample_log().export_signed_json(&SIGNING_KEY);
+        assert!(AuditLog::verify_signed_export(&doc, None));
+    }
+
+    #[test]
+    fn signed_export_verifies_against_expected_signer() {
+        use ed25519_dalek::SigningKey;
+        let doc = sample_log().export_signed_json(&SIGNING_KEY);
+        let pubkey = SigningKey::from_bytes(&SIGNING_KEY).verifying_key().to_bytes();
+        assert!(AuditLog::verify_signed_export(&doc, Some(&pubkey)));
+        assert!(
+            !AuditLog::verify_signed_export(&doc, Some(&[0x99u8; 32])),
+            "unexpected signer key must be rejected"
+        );
+    }
+
+    #[test]
+    fn tampered_payload_fails_signature() {
+        let doc = sample_log().export_signed_json(&SIGNING_KEY);
+        let tampered = doc.replace("control_granted", "control_denied!");
+        assert_ne!(doc, tampered, "replacement must occur");
+        assert!(!AuditLog::verify_signed_export(&tampered, None));
+    }
+
+    #[test]
+    fn swapped_signer_key_fails_signature() {
+        // An attacker replacing the embedded pubkey (to re-attribute the log)
+        // invalidates the signature because the key is inside the signed region.
+        use ed25519_dalek::SigningKey;
+        let doc = sample_log().export_signed_json(&SIGNING_KEY);
+        let real_hex: String = SigningKey::from_bytes(&SIGNING_KEY)
+            .verifying_key()
+            .to_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let fake_hex: String =
+            SigningKey::from_bytes(&[7u8; 32]).verifying_key().to_bytes().iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+        let tampered = doc.replace(&real_hex, &fake_hex);
+        assert!(!AuditLog::verify_signed_export(&tampered, None));
+    }
+
+    #[test]
+    fn malformed_documents_are_rejected() {
+        assert!(!AuditLog::verify_signed_export("", None));
+        assert!(!AuditLog::verify_signed_export("{\"entries\":[]}", None));
+        assert!(!AuditLog::verify_signed_export(
+            "{\"entries\":[],\"signer_pubkey\":\"zz\",\"signature\":\"aa\"}",
+            None
+        ));
+    }
+
+    #[test]
+    fn signed_export_file_roundtrip() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("lb-audit-signed-{}.json", std::process::id()));
+        sample_log().export_signed_to_file(&path, &SIGNING_KEY).unwrap();
+        let doc = std::fs::read_to_string(&path).unwrap();
+        assert!(AuditLog::verify_signed_export(&doc, None));
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn empty_log_verifies() {

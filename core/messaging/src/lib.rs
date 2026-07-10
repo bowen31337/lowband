@@ -36,6 +36,9 @@ pub use grants::{
     FileGrant, FileSession,
     ViewGrant, ViewSession,
 };
-pub use panic_key::{PanicController, PanicEffect, PANIC_INJECTION_BLOCK_DEADLINE_MS};
+pub use panic_key::{
+    PanicController, PanicEffect, PanicNotice, PanicNoticeReceiver,
+    PANIC_INJECTION_BLOCK_DEADLINE_MS, PANIC_NOTICE_LEN, PANIC_NOTICE_TAG,
+};
 pub use qos_observer::QosSessionObserver;
 pub use session_records::{SessionRecord, SessionRecordStore, Tier};

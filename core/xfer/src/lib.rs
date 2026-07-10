@@ -22,6 +22,7 @@
 pub mod cache;
 pub mod hash;
 pub mod persistent_cache;
+pub mod resume;
 pub mod scheduler;
 
 #[cfg(feature = "hash")]
@@ -35,6 +36,7 @@ pub use cache::{
     confirm_delivered, split_delta, ChunkCache, InMemoryChunkCache, TransferManifest,
 };
 pub use persistent_cache::PersistentChunkCache;
+pub use resume::{OpenOutcome, ResumableTransfer};
 pub use hash::ChunkHash;
 pub use scheduler::{
     AggregatedDatagram, BulkTransferScheduler, PacerDemand, TickResult, XferFrame,
