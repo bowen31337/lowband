@@ -24,6 +24,7 @@
 mod dataplane;
 mod file_transfer;
 mod inbound;
+mod screen_transfer;
 mod session;
 mod stun;
 

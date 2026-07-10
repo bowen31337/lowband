@@ -150,7 +150,9 @@ impl SecureSession {
     /// Returns [`SessionError::AuthFailed`] if the datagram does not
     /// authenticate under the receive key.
     pub fn recv(&mut self) -> Result<Vec<u8>> {
-        let mut buf = [0u8; 2048];
+        // Sized to hold the largest application datagram: a raw 32×32 BGRA
+        // screen tile (4096 B) plus framing and the AEAD nonce/tag overhead.
+        let mut buf = [0u8; 8192];
         let (n, _from) = self.socket.recv_from(&mut buf)?;
         self.recv.open_bytes(&buf[..n]).ok_or(SessionError::AuthFailed)
     }

@@ -17,6 +17,7 @@ use lowband_messaging::MessageFrame;
 
 use crate::dataplane::{dispatch, Delivered};
 use crate::file_transfer::{FileReceiver, Progress, XferError, XferFrame};
+use crate::screen_transfer::{ScreenFrame, ScreenReceiver};
 
 /// Which protocol a received datagram belongs to, by its kind byte.
 #[derive(Debug, PartialEq, Eq)]
@@ -25,6 +26,8 @@ pub enum Channel {
     Message,
     /// Bulk file-transfer frame.
     File,
+    /// Screen-frame transfer.
+    Screen,
     /// Unrecognized leading byte.
     Unknown(u8),
 }
@@ -34,6 +37,7 @@ pub fn classify(bytes: &[u8]) -> Channel {
     match bytes.first() {
         Some(0x01..=0x04) => Channel::Message,
         Some(0x10..=0x12) => Channel::File,
+        Some(0x20..=0x22) => Channel::Screen,
         Some(&b) => Channel::Unknown(b),
         None => Channel::Unknown(0),
     }
@@ -46,6 +50,8 @@ pub enum Handled {
     Message(Delivered),
     /// A file-transfer frame advanced the receiver.
     File(Progress),
+    /// A screen tile was applied; `Some(bytes)` on a completed frame.
+    Screen { complete: bool },
     /// The datagram's kind byte matched no known channel.
     Unknown(u8),
 }
@@ -58,6 +64,9 @@ pub struct InboundRouter {
     pub panic: PanicController,
     pub panic_rx: PanicNoticeReceiver,
     pub files: FileReceiver,
+    pub screen: ScreenReceiver,
+    /// The most recently completed screen framebuffer (BGRA8), if any.
+    pub last_screen: Option<Vec<u8>>,
 }
 
 impl InboundRouter {
@@ -68,6 +77,8 @@ impl InboundRouter {
             panic: PanicController::new(),
             panic_rx: PanicNoticeReceiver::new(),
             files,
+            screen: ScreenReceiver::new(),
+            last_screen: None,
         }
     }
 
@@ -91,6 +102,15 @@ impl InboundRouter {
             Channel::File => {
                 let frame = XferFrame::decode(bytes)?;
                 Ok(Handled::File(self.files.apply(frame)?))
+            }
+            Channel::Screen => {
+                let frame = ScreenFrame::decode(bytes).map_err(|_| XferError::Truncated)?;
+                let done = self.screen.apply(frame).map_err(|_| XferError::Truncated)?;
+                let complete = done.is_some();
+                if complete {
+                    self.last_screen = done;
+                }
+                Ok(Handled::Screen { complete })
             }
             Channel::Unknown(b) => Ok(Handled::Unknown(b)),
         }
@@ -153,6 +173,8 @@ mod tests {
             router.clipboard.set_grant(Some(ClipboardGrant::new()));
 
             let mut got_chat = None;
+            // File completes last (sent last), so break there and read the
+            // screen the router reconstructed along the way.
             loop {
                 match router.recv_and_handle(&mut sess).unwrap() {
                     Handled::Message(Delivered::Chat(t)) => got_chat = Some(t),
@@ -160,19 +182,24 @@ mod tests {
                     _ => {}
                 }
             }
-            got_chat
+            let got_screen = router.last_screen.clone();
+            (got_chat, got_screen)
         });
 
         let init_sock = UdpSocket::bind("127.0.0.1:0").unwrap();
         let mut client =
             SecureSession::connect(init_sock, resp_addr, &init_key, resp_pub, code).unwrap();
 
-        // Interleave a control message with the file transfer on one channel.
+        // Interleave a control message, a screen frame, and a file transfer on
+        // one channel — all three planes must route correctly.
         crate::dataplane::send_message(&mut client, &MessageFrame::Chat("starting".into())).unwrap();
+        let screen = crate::screen_transfer::text_screen(64, 32);
+        crate::screen_transfer::send_frame(&mut client, 64, 32, &screen).unwrap();
         crate::file_transfer::send_file(&mut client, &src).unwrap();
 
-        let chat = server.join().unwrap();
+        let (chat, screen_out) = server.join().unwrap();
         assert_eq!(chat.as_deref(), Some("starting"), "chat routed to the message plane");
+        assert_eq!(screen_out.as_deref(), Some(&screen[..]), "screen routed + pixel-perfect");
         assert_eq!(std::fs::read(&dst).unwrap(), data, "file routed to the xfer plane, intact");
         for p in [&dst, &resume, &src] {
             let _ = std::fs::remove_file(p);
