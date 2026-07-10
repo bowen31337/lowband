@@ -43,6 +43,7 @@
 //! the governor steps up from 640×360 to 848×480; below that threshold it
 //! locks to the 640×360 floor.
 
+use lowband_nn::head_gear_gate::{head_gear_available, HeadGearCapability};
 use crate::thermal::ThermalPressure;
 
 /// CPU usage (%) below which Gear B selects SVT-AV1 preset 10 (best quality).
@@ -378,6 +379,50 @@ impl GearConstraints {
             thermal_level: pressure,
             av1_encode: av1_cap,
         }
+    }
+
+    /// Derive constraints using thermal pressure, AV1 capability, live CPU
+    /// telemetry, **and** NPU availability to gate the neural head gear
+    /// (Feature 82).
+    ///
+    /// Extends [`from_thermal_with_capability_and_cpu`] with the Feature 82
+    /// rule: Gear A (the neural talking-head codec) is permitted only when
+    /// `has_npu` is `true` **or** `cpu_usage_pct` is below
+    /// [`lowband_nn::CPU_HEADROOM_THRESHOLD_PCT`] (50 %).  When neither
+    /// condition holds, Gear A is downgraded to Gear B with the preset
+    /// selected by [`gear_b_preset_from_cpu_pct`].
+    ///
+    /// All other rules (thermal, legacy-CPU fallback, audio floor) are
+    /// unchanged.  In particular:
+    ///
+    /// - On a **legacy CPU** (`av1_cap == Legacy`) the camera is already
+    ///   capped at Gear C before the head-gear gate is applied, so the gate
+    ///   has no additional effect.
+    /// - At **Fair / Serious / Critical** thermal pressure Gear A is already
+    ///   excluded by the thermal rule, so the NPU/CPU gate only matters at
+    ///   **Nominal** thermal.
+    ///
+    /// Call this variant from the governor on every 10 Hz tick; it is the
+    /// single source of truth for all encoder-constraint decisions.
+    pub fn from_thermal_with_capability_cpu_and_npu(
+        pressure: ThermalPressure,
+        av1_cap: Av1EncodeCapability,
+        cpu_usage_pct: f64,
+        has_npu: bool,
+    ) -> Self {
+        let mut constraints =
+            Self::from_thermal_with_capability_and_cpu(pressure, av1_cap, cpu_usage_pct);
+
+        // Feature 82: reject Gear A when neither NPU nor spare CPU is available.
+        if constraints.max_camera_gear == CameraGear::GearA
+            && head_gear_available(has_npu, cpu_usage_pct) == HeadGearCapability::Rejected
+        {
+            // Downgrade to the Gear B preset appropriate for the current CPU load.
+            let preset = gear_b_preset_from_cpu_pct(cpu_usage_pct);
+            constraints.max_camera_gear = CameraGear::GearB { svt_preset: preset };
+        }
+
+        constraints
     }
 
     /// Returns `true` if the neural camera gear (Gear A) is permitted.
