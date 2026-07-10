@@ -78,6 +78,7 @@ pub mod synthesis_network;
 pub mod temporal_svc;
 pub mod thermal;
 pub mod tier;
+pub mod tier_classifier;
 pub mod tier_gears;
 pub mod tier_downgrade_guard;
 pub mod tier_upgrade_guard;
@@ -217,6 +218,7 @@ pub use governor_summary::{
     converge_summaries, ConvergedSummary, GovernorSummary,
     LOSS_PPM_SCALE, SUMMARY_INTERVAL_MS,
 };
+pub use tier_classifier::{classify_bwe_tier, GovernorTierEmitter};
 pub use tier_downgrade_guard::{
     downgrade_trigger_bps, tier_floor_bps, TierDowngradeGuard,
     COMFORTABLE_FLOOR_BPS, CONSTRAINED_FLOOR_BPS, DOWNGRADE_TRIGGER_RATIO, FULL_FLOOR_BPS,

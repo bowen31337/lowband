@@ -4,7 +4,7 @@
 ///
 /// Tiers are ordered from most-degraded to best quality.  The derived
 /// [`Ord`] ordering reflects this: `Survival < Constrained < Comfortable < Full`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TierState {
     /// Minimum viable session: voice only, all optional features shed.
     Survival,
