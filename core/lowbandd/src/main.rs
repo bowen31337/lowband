@@ -25,6 +25,10 @@ mod adpcm;
 mod dataplane;
 mod file_transfer;
 mod inbound;
+// Verification-only harness (NFR-4 OCR gate); compiled for tests, like the
+// bench gates.
+#[cfg(test)]
+mod ocr;
 mod screen_transfer;
 mod session;
 mod stun;
