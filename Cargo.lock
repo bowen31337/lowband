@@ -772,6 +772,7 @@ dependencies = [
  "lowband-messaging",
  "lowband-platform",
  "lowband-signaling",
+ "lowband-xfer",
  "tokio",
 ]
 

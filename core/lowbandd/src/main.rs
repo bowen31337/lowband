@@ -22,6 +22,7 @@
 //! [`GearUpdate`](lowband_platform::ipc::IpcEvent::GearUpdate).
 
 mod dataplane;
+mod file_transfer;
 mod session;
 
 use std::path::PathBuf;
