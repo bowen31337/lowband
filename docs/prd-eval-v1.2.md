@@ -5,6 +5,14 @@ FR/NFR in `docs/lowband-prd.md` to implementation evidence (file:line), plus
 CI/verification-infrastructure review. Verdicts require real logic with
 tests — doc comments and type stubs do not count.
 
+> **Update (post-audit Beta work).** Several findings below have since been
+> addressed; see the "Progress since audit" section at the end. Rows changed:
+> FR-1, FR-5, FR-6, FR-12, NFR-6, and CI enforcement. The overall verdict
+> (still NOT READY for v1.2) is unchanged — the media/codec and mesh gaps
+> dominate — but the "integration exists only in tests" claim is now partly
+> false: a real join-code → signaling → Noise-IK-over-UDP → encrypted-data
+> path exists and is tested over real sockets.
+
 ## Verdict: NOT READY for v1.2 — and not yet at Alpha (M1) exit either
 
 The PRD's release ladder (§10) is cumulative: v1.2 (M5) requires everything
@@ -99,6 +107,30 @@ with the real tools over netem, NFR-8 CPU gate, external security review
 **v1.2 (M5) scope itself:** mesh group-call architecture (multi-peer
 signaling rooms, N-party session state, per-peer governor budget division)
 and clipboard file transfer under the `clipboard` grant — both greenfield.
+
+## Progress since audit
+
+The following eval findings have been implemented with tests (all pushed to
+`main`; 90 test suites green + smoke test):
+
+| Finding (original verdict) | Now | What was done |
+|---|---|---|
+| FR-1 "no client consumes signaling" | **client done** | `SignalingClient` (blocking HTTP/1.1 over `TcpStream`, no new deps) drives the full `/signal/*` API; integration test runs the real axum server over a loopback TCP port. Added the missing `GET /signal/answer/:code` route so the offerer can read the answer. |
+| NFR-6 "crypto never invoked on live path" | **live path done** | `SecureSession` (`core/crypto/src/udp_session.rs`) runs Noise-IK across two real `UdpSocket`s and seals/opens datagrams with per-direction ChaCha20-Poly1305; `DatagramCipher::open_bytes` added so a receiver can decrypt raw wire bytes. |
+| "code entry → signaling → session path is nonexistent" | **path exists** | Capstone e2e test (`session_establishment.rs`): 9-digit code → transport addrs exchanged as ICE candidates through signaling → Noise-IK over UDP → encrypted app data both ways → `mark_connected`. |
+| FR-5 panic "local only, no remote propagation" | **both sides** | `PanicNotice` wire frame + `fire_panic_with_notice` + `PanicNoticeReceiver` (retransmit dedup); real `IpcEvent::PanicFired` variant. |
+| FR-6 "resume PARTIAL, no restart-continue" | **resume done** | `ResumableTransfer` persists manifest + per-chunk progress WAL; survives restart, crash-residue safe, refuses manifest mismatch. |
+| FR-12 "SipHash MAC, not ed25519" | **ed25519** | `export_signed_json`/`verify_signed_export` add a real asymmetric signature over the canonical payload; rejects tampering, swapped signer keys, malformed docs. |
+| CI enforcement "absent" | **wired** | `.github/workflows/ci.yml` runs `cargo test --workspace` on push/PR. |
+
+**Still open (the dominant blockers, unchanged):** real codecs
+(libopus/SVT-AV1/dav1d/H.264), speaker playback, session assembly *inside the
+`lowbandd` daemon* (the SecureSession path is proven in tests but the daemon
+still runs only the governor), an ICE agent for real NAT traversal, per-monitor
+capture selection, the neural runtime behind its gates, the model-based
+verification gates replaced with real ViSQOL/OCR/VMAF over netem, NFR-8 CPU
+gate — and the two v1.2 (M5) headline features, mesh group calls and clipboard
+file sync, which remain greenfield.
 
 ## Honest summary
 
