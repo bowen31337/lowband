@@ -129,19 +129,28 @@ The following eval findings have been implemented with tests (all pushed to
 | FR-6 "resume PARTIAL, no end-to-end transfer" | **integrated** | `core/lowbandd/src/file_transfer.rs` sends a real file over the `SecureSession` as datagram-safe fragments with per-fragment + whole-file BLAKE3, reassembles + verifies, and resumes a restarted transfer via `ResumableTransfer`. Test sends a file intact over a live Noise-IK session and resumes a mid-transfer crash. |
 | FR-7 "candidates exchanged but not gathered from STUN" | **STUN gathering** | `core/lowbandd/src/stun.rs` sends an RFC 5389 Binding Request and parses XOR-MAPPED-ADDRESS → the server-reflexive candidate, now published alongside the local one during establishment (`--stun` flag). Tested against a mock STUN server + an establishment run with STUN enabled. |
 
-**Still open (the dominant blockers):** real codecs
-(libopus/SVT-AV1/dav1d/H.264) and speaker playback — so no media actually
-flows over the now-established secure channel; the media data-plane loop in
-the daemon (the channel stands up but carries no audio/screen/input yet); an
-ICE agent for real NAT traversal (candidates are exchanged but not gathered
-from STUN); per-monitor capture selection; the neural runtime behind its
-gates; the model-based verification gates replaced with real ViSQOL/OCR/VMAF
-over netem; the NFR-8 CPU gate. The two v1.2 (M5) headline features now have
-their non-media foundations — clipboard file sync has its capability-gated,
-path-safe metadata handshake, and mesh group calls have their 4-party room
-rendezvous with a client roster API — but both still need the media layer
-(codecs + the per-pair mesh data plane) and OS-clipboard / `xfer`-pull wiring
-to be end-user-complete.
+**Still open (the dominant blockers).** These need C-library FFI, external
+tooling, or hardware this environment can't verify against, so they were left
+rather than stubbed:
+
+- **Real codecs** (libopus/SVT-AV1/dav1d/H.264) and **mic/speaker audio I/O** —
+  the single largest gap. The encrypted control/data plane runs in the daemon
+  now, but no *media* flows over it; confirmed infeasible here (no libopus, no
+  cmake, musl target, no sudo).
+- **Neural ONNX runtime + models** behind the existing gates.
+- **Real ViSQOL / OCR / VMAF gates over netem** to replace the model-based
+  approximations.
+- **NFR-8 CPU-ceiling bench gate**; **per-monitor/window capture selection**;
+  full **ICE connectivity checks + TURN allocate** (STUN reflexive gathering
+  is now done; the higher ICE layer is not).
+
+The two v1.2 (M5) headline features have their non-media foundations —
+clipboard file sync (capability-gated, path-safe metadata handshake) and mesh
+group calls (4-party room rendezvous + roster API) — but still need the media
+layer (codecs) and, for mesh, the per-pair session fan-out across the roster
+to be end-user-complete. File transfer (FR-6) and the control channels
+(chat/clipboard/panic, FR-10/9/5) are integrated end-to-end over the E2EE
+session and processed by the daemon today.
 
 ## Honest summary
 
