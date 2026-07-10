@@ -30,6 +30,8 @@ const KIND_END: u8 = 0x22;
 const ENC_PALETTE: u8 = 0;
 const ENC_RAW: u8 = 1;
 const ENC_DCT: u8 = 2;
+#[cfg(feature = "av1")]
+const ENC_AV1: u8 = 3;
 
 /// A screen-transfer frame on the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,10 +114,13 @@ pub fn send_frame(
         for col in 0..grid.cols {
             let tile = grid.extract_tile(pixels, stride, TileCoord { col, row });
             // Prefer the lossless palette coder for text/flat tiles; for
-            // photographic tiles (> palette color limit) use the lossy DCT
-            // camera gear, which compresses far below raw BGRA.
+            // photographic tiles (> palette color limit) use the AV1 camera
+            // gear when compiled in, else the interim block-DCT codec.
             let (encoding, data) = match PaletteTileEncoder::encode(&tile) {
                 Ok(d) => (ENC_PALETTE, d),
+                #[cfg(feature = "av1")]
+                Err(_) => (ENC_AV1, crate::av1_codec::encode_tile(&tile)),
+                #[cfg(not(feature = "av1"))]
                 Err(_) => (ENC_DCT, crate::picture::encode_tile(&tile)),
             };
             session.send(&ScreenFrame::Tile { col, row, encoding, data }.encode())?;
@@ -167,6 +172,10 @@ impl ScreenReceiver {
                     }
                     ENC_DCT => {
                         crate::picture::decode_tile(&data).ok_or(ScreenError::BadTile)?.to_vec()
+                    }
+                    #[cfg(feature = "av1")]
+                    ENC_AV1 => {
+                        crate::av1_codec::decode_tile(&data).ok_or(ScreenError::BadTile)?.to_vec()
                     }
                     other => return Err(ScreenError::UnknownEncoding(other)),
                 };

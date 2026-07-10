@@ -47,3 +47,22 @@ jobs:
           cargo test -p lowbandd --features opus
           --target x86_64-unknown-linux-gnu
           --config 'host.rustflags=[]'
+
+  # Builds and tests the PRODUCTION AV1 camera codec: rav1e encode (pure Rust)
+  # + dav1d decode (system libdav1d) — the C dependency the local environment
+  # can't install. This is where FR-8's AV1 roundtrip is actually exercised.
+  camera-av1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libdav1d + nasm
+        run: sudo apt-get update && sudo apt-get install -y libdav1d-dev nasm pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: av1
+      - name: Test the AV1 camera codec (rav1e encode / dav1d decode)
+        run: >
+          cargo test -p lowbandd --features av1
+          --target x86_64-unknown-linux-gnu
+          --config 'host.rustflags=[]'

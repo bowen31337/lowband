@@ -33,6 +33,10 @@ mod ocr;
 // when this feature is off.
 #[cfg(feature = "opus")]
 mod opus_codec;
+// Production AV1 camera codec (rav1e encode / dav1d decode); the interim
+// block-DCT codec is used when these features are off.
+#[cfg(feature = "av1-encode")]
+mod av1_codec;
 mod picture;
 // Verification-only quality gates (SSIM / segmental SNR); compiled for tests.
 #[cfg(test)]

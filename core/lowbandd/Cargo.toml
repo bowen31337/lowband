@@ -15,6 +15,12 @@ path = "src/main.rs"
 # installs libopus-dev and builds+tests with `--features opus`. Without it,
 # the voice path uses the pure-Rust interim ADPCM codec.
 opus = ["dep:opus"]
+# Production AV1 camera codec (FR-8). `av1-encode` pulls only rav1e (the
+# pure-Rust AV1 encoder — builds anywhere, so the encode side is testable
+# locally). `av1` adds dav1d (system libdav1d) for decode, exercised by the
+# CI `camera-av1` job. Without these, photographic tiles use the interim DCT.
+av1-encode = ["dep:rav1e"]
+av1 = ["av1-encode", "dep:dav1d"]
 
 [dependencies]
 lowband-platform = { path = "../platform" }
@@ -24,6 +30,9 @@ lowband-messaging = { path = "../messaging" }
 lowband-xfer = { path = "../xfer", features = ["hash"] }
 # Links system libopus via pkg-config (see the `opus` feature above).
 opus = { version = "0.3", optional = true }
+# rav1e: pure-Rust AV1 encoder (no C). dav1d: system libdav1d decoder.
+rav1e = { version = "0.8", optional = true, default-features = false }
+dav1d = { version = "0.10", optional = true }
 
 [dev-dependencies]
 axum = "0.7"

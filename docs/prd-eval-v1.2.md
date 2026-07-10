@@ -144,9 +144,14 @@ rather than stubbed:
   (empirically: `audiopus_sys` needs `autoreconf`, absent; no cmake/sudo), so
   the `voice-opus` CI job installs `libopus-dev` and actually compiles + tests
   it against real libopus. DRED activates when the linked libopus is ≥ 1.5.
-- **Production camera codec (SVT-AV1, FR-8)** — same pattern pending (interim
-  block-DCT ships today; AV1 drops into the `ScreenFrame` tile slot behind a
-  feature + CI job with the codec libs installed). FR-8/AV1 is a GA/M3 item.
+- **Production camera codec (AV1, FR-8)** — **implemented.** `core/lowbandd/
+  src/av1_codec.rs` encodes tiles with `rav1e` (pure-Rust AV1 encoder — the
+  `av1-encode` feature, tested locally: real compressed AV1 below raw) and
+  decodes with `dav1d` (system libdav1d — the `av1` feature). Wired into the
+  screen codec's photographic-tile slot (DCT is the interim when AV1 is off);
+  the `camera-av1` CI job installs libdav1d + nasm and runs the full encode→
+  decode roundtrip. FR-8/AV1 is a GA/M3 item; the interim block-DCT ships in
+  the default build.
 - **Mic/speaker audio device I/O** — needs audio hardware to build and observe
   (`mic_capture.rs` has the capture FFI; playback FFI + the capture loop are
   the remaining wiring).
