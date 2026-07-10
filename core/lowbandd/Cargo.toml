@@ -13,6 +13,7 @@ path = "src/main.rs"
 lowband-platform = { path = "../platform" }
 lowband-signaling = { path = "../signaling" }
 lowband-crypto = { path = "../crypto" }
+lowband-messaging = { path = "../messaging" }
 
 [dev-dependencies]
 axum = "0.7"

@@ -20,6 +20,7 @@ pub mod grants;
 pub mod panic_key;
 pub mod qos_observer;
 pub mod session_records;
+pub mod wire;
 
 pub use audit::{AuditEntry, AuditLog};
 pub use channel::{ChannelError, Message, ReliableChannel};
@@ -41,4 +42,5 @@ pub use panic_key::{
     PANIC_INJECTION_BLOCK_DEADLINE_MS, PANIC_NOTICE_LEN, PANIC_NOTICE_TAG,
 };
 pub use qos_observer::QosSessionObserver;
+pub use wire::{FrameError, MessageFrame};
 pub use session_records::{SessionRecord, SessionRecordStore, Tier};

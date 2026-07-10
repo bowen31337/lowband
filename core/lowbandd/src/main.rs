@@ -21,6 +21,7 @@
 //! [`StreamBudget`](lowband_platform::ipc::IpcEvent::StreamBudget), and
 //! [`GearUpdate`](lowband_platform::ipc::IpcEvent::GearUpdate).
 
+mod dataplane;
 mod session;
 
 use std::path::PathBuf;

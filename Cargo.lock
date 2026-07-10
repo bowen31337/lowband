@@ -769,6 +769,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "lowband-crypto",
+ "lowband-messaging",
  "lowband-platform",
  "lowband-signaling",
  "tokio",
