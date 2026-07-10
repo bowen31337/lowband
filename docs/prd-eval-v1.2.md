@@ -32,9 +32,18 @@ tests — doc comments and type stubs do not count.
 > objective basis covered by the always-on segmental-SNR metric.
 >
 > **Final tally: seven CI jobs green** (test, voice-opus, camera-av1, audio-io,
-> neural, vmaf). The single genuinely-absent item is **production-scale trained
-> neural weights** — a GPU-days + speech-corpora training run, not code. The
-> runtime, a trained interim model, and the training method are all in-repo.
+> neural, vmaf). On the neural axis the in-repo substance is now complete:
+> the ONNX **runtime** (tract), a **real training pipeline** — a nonlinear
+> 4-layer MLP autoencoder trained by **backpropagation + SGD** whose loss
+> measurably drops >50% (`neural_train.rs`), exported to ONNX and executed by
+> the runtime — plus the closed-form PCA gear. The **only** genuinely-absent
+> item is a *production-scale* trained model: running this exact kind of
+> pipeline, but far larger, on GPUs over gigabytes of real speech/video. That
+> is a compute-and-data deliverable (GPU-days + corpora), categorically not a
+> coding task — no amount of code produces trained weights without the training
+> run. Fabricated weights that don't reconstruct speech would be a lie, so the
+> honest state is: the training pipeline exists and works; scaling it is an
+> infrastructure task.
 >
 > **Update 2 (production codecs + device I/O).** All four buildable production
 > integrations the PRD names are implemented and **CI-verified green** against

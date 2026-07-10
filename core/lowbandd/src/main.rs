@@ -46,6 +46,9 @@ mod neural;
 // Trained neural voice gear (PCA autoencoder → ONNX → tract runtime).
 #[cfg(feature = "onnx")]
 mod neural_codec;
+// Neural training pipeline: backprop-trained nonlinear MLP autoencoder.
+#[cfg(feature = "onnx")]
+mod neural_train;
 mod picture;
 // Verification-only quality gates (SSIM / segmental SNR); compiled for tests.
 #[cfg(test)]
