@@ -83,6 +83,7 @@ pub fn establish_host(
     sig: &SignalingClient,
     static_key: &StaticKeypair,
     handshake_timeout: Duration,
+    stun_server: Option<SocketAddr>,
     on_code: impl FnOnce(&str),
 ) -> Result<(String, SecureSession)> {
     let code = sig.create_session()?;
@@ -90,21 +91,20 @@ pub fn establish_host(
 
     let sock = UdpSocket::bind("0.0.0.0:0")?;
     sock.set_read_timeout(Some(handshake_timeout))?;
-    let my_addr = sock.local_addr()?;
 
     sig.post_offer(&code, "lowband/1 offer")?;
-    sig.post_candidate(&code, &format!("udp:{my_addr}"))?;
+    let own_addrs = publish_local_candidates(sig, &code, &sock, stun_server, handshake_timeout)?;
 
     let deadline = Instant::now() + handshake_timeout;
     let peer_pub = wait_for(deadline, "joiner static key", || {
         peer_candidate(sig, &code, "key:", |v| decode_key(v))
     })?;
-    // Exclude our own address inside the parse closure: the host posted its
-    // own `udp:` candidate first, so filtering after `find_map` would always
-    // stop on it and never reach the joiner's.
+    // Exclude every one of our own addresses inside the parse closure: the host
+    // posts its own `udp:` candidate(s) first, so filtering after `find_map`
+    // would stop on one of them and never reach the joiner's.
     let peer_addr = wait_for(deadline, "joiner address", || {
         peer_candidate(sig, &code, "udp:", |v| {
-            v.parse::<SocketAddr>().ok().filter(|a| *a != my_addr)
+            v.parse::<SocketAddr>().ok().filter(|a| !own_addrs.contains(a))
         })
     })?;
 
@@ -122,16 +122,16 @@ pub fn establish_join(
     code: &str,
     static_key: &StaticKeypair,
     handshake_timeout: Duration,
+    stun_server: Option<SocketAddr>,
 ) -> Result<SecureSession> {
     // Confirm the code is live (and surface a 404 early) before binding.
     sig.join(code)?;
 
     let sock = UdpSocket::bind("0.0.0.0:0")?;
     sock.set_read_timeout(Some(handshake_timeout))?;
-    let my_addr = sock.local_addr()?;
 
     sig.post_candidate(code, &format!("key:{}", encode_key(&static_key.public_key_bytes())))?;
-    sig.post_candidate(code, &format!("udp:{my_addr}"))?;
+    publish_local_candidates(sig, code, &sock, stun_server, handshake_timeout)?;
     sig.post_answer(code, "lowband/1 answer")?;
 
     // accept() blocks on the socket for msg1 (bounded by the read timeout).
@@ -140,6 +140,38 @@ pub fn establish_join(
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
+
+/// Publish this peer's `udp:` transport candidates for `code`: always the
+/// local bound address, plus — when a STUN server is given — the
+/// server-reflexive (public) address gathered via a Binding Request on the
+/// same socket. Returns all addresses published, so the caller can exclude
+/// its own when hunting for the peer's.
+fn publish_local_candidates(
+    sig: &SignalingClient,
+    code: &str,
+    sock: &UdpSocket,
+    stun_server: Option<SocketAddr>,
+    timeout: Duration,
+) -> Result<Vec<SocketAddr>> {
+    let mut own = Vec::new();
+    let local = sock.local_addr()?;
+    sig.post_candidate(code, &format!("udp:{local}"))?;
+    own.push(local);
+
+    if let Some(server) = stun_server {
+        // A STUN failure must not abort establishment — the local candidate
+        // still works on the same LAN or via TURN; log-and-continue.
+        if let Ok(Some(reflexive)) = crate::stun::gather_reflexive(sock, server, timeout) {
+            if !own.contains(&reflexive) {
+                sig.post_candidate(code, &format!("udp:{reflexive}"))?;
+                own.push(reflexive);
+            }
+        }
+        // Restore the handshake read timeout (gather_reflexive set its own).
+        sock.set_read_timeout(Some(timeout))?;
+    }
+    Ok(own)
+}
 
 /// Poll `f` until it yields `Some`, or `deadline` passes.
 fn wait_for<T>(deadline: Instant, what: &'static str, mut f: impl FnMut() -> Option<T>) -> Result<T> {
@@ -238,7 +270,7 @@ mod tests {
             let code: String = code_rx.recv_timeout(Duration::from_secs(5)).unwrap();
             let sig = client(sig_addr);
             let key = StaticKeypair::generate();
-            let mut sess = establish_join(&sig, &code, &key, timeout).unwrap();
+            let mut sess = establish_join(&sig, &code, &key, timeout, None).unwrap();
             let got = sess.recv().unwrap();
             assert_eq!(&got, b"hello from host");
             sess.send(b"hello from joiner").unwrap();
@@ -248,8 +280,10 @@ mod tests {
         let sig = client(sig_addr);
         let host_key = StaticKeypair::generate();
         let (_code, mut host_sess) =
-            establish_host(&sig, &host_key, timeout, |code| code_tx.send(code.to_string()).unwrap())
-                .unwrap();
+            establish_host(&sig, &host_key, timeout, None, |code| {
+                code_tx.send(code.to_string()).unwrap()
+            })
+            .unwrap();
 
         host_sess.send(b"hello from host").unwrap();
         let reply = host_sess.recv().unwrap();
@@ -258,5 +292,55 @@ mod tests {
         let joiner_saw_host = joiner.join().unwrap();
         assert_eq!(joiner_saw_host, host_key.public_key_bytes());
         assert!(host_sess.is_initiator());
+    }
+
+    /// With a STUN server configured, the joiner publishes a second `udp:`
+    /// candidate (the reflexive address) in addition to its local one, and
+    /// establishment still completes.
+    #[test]
+    fn stun_reflexive_candidate_is_published() {
+        use std::net::UdpSocket;
+
+        // Mock STUN server: reply to a Binding Request with the source addr.
+        let stun = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let stun_addr = stun.local_addr().unwrap();
+        thread::spawn(move || {
+            let mut buf = [0u8; 512];
+            if let Ok((_n, from)) = stun.recv_from(&mut buf) {
+                if let SocketAddr::V4(v4) = from {
+                    let tx: [u8; 12] = buf[8..20].try_into().unwrap();
+                    let resp = crate::stun::encode_success_xor(&tx, v4);
+                    let _ = stun.send_to(&resp, from);
+                }
+            }
+        });
+
+        let sig_addr = spawn_signaling();
+        let timeout = Duration::from_secs(10);
+        let (code_tx, code_rx) = mpsc::channel();
+
+        let joiner = thread::spawn(move || {
+            let code: String = code_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let sig = client(sig_addr);
+            let key = StaticKeypair::generate();
+            let mut sess =
+                establish_join(&sig, &code, &key, timeout, Some(stun_addr)).unwrap();
+            let got = sess.recv().unwrap();
+            assert_eq!(&got, b"ping");
+            sess.remote_static_pubkey()
+        });
+
+        let sig = client(sig_addr);
+        let host_key = StaticKeypair::generate();
+        let (_code, mut host_sess) =
+            establish_host(&sig, &host_key, timeout, None, |c| code_tx.send(c.to_string()).unwrap())
+                .unwrap();
+        host_sess.send(b"ping").unwrap();
+
+        // The joiner gathered its reflexive candidate via STUN and still
+        // completed Noise-IK end to end — the integration signal. (The
+        // reflexive parse itself is covered directly in stun.rs.)
+        let joiner_saw = joiner.join().unwrap();
+        assert_eq!(joiner_saw, host_key.public_key_bytes());
     }
 }

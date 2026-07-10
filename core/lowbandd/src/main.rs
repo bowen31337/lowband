@@ -24,6 +24,7 @@
 mod dataplane;
 mod file_transfer;
 mod session;
+mod stun;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -82,6 +83,8 @@ struct Config {
     drop_to: Option<String>,
     /// How to establish the peer session at startup.
     session_mode: SessionMode,
+    /// Optional STUN server for server-reflexive candidate gathering.
+    stun_server: Option<std::net::SocketAddr>,
 }
 
 fn parse_args() -> Config {
@@ -93,6 +96,7 @@ fn parse_args() -> Config {
     let mut signaling: Option<String> = None;
     let mut host = false;
     let mut join_code: Option<String> = None;
+    let mut stun_server: Option<std::net::SocketAddr> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -126,6 +130,7 @@ fn parse_args() -> Config {
             "--signaling" => signaling = args.next(),
             "--host" => host = true,
             "--join" => join_code = args.next(),
+            "--stun" => stun_server = args.next().and_then(|s| s.parse().ok()),
             _ => {}
         }
     }
@@ -143,13 +148,17 @@ fn parse_args() -> Config {
         #[cfg(target_os = "linux")]
         drop_to,
         session_mode,
+        stun_server,
     }
 }
 
 /// Establish the peer session (blocking) before the governor loop starts.
 /// Logs the secure-channel outcome; media plumbing over the channel is a
 /// later milestone, so the session is held for the process lifetime.
-fn establish_peer_session(mode: &SessionMode) -> Option<lowband_crypto::SecureSession> {
+fn establish_peer_session(
+    mode: &SessionMode,
+    stun_server: Option<std::net::SocketAddr>,
+) -> Option<lowband_crypto::SecureSession> {
     use lowband_crypto::StaticKeypair;
     use lowband_signaling::SignalingClient;
 
@@ -172,12 +181,18 @@ fn establish_peer_session(mode: &SessionMode) -> Option<lowband_crypto::SecureSe
     };
 
     let result = if is_host {
-        session::establish_host(&client, &static_key, timeout, |code| {
+        session::establish_host(&client, &static_key, timeout, stun_server, |code| {
             eprintln!("lowbandd: hosting session — join code: {code}");
         })
         .map(|(_code, s)| s)
     } else {
-        session::establish_join(&client, code.as_deref().unwrap_or(""), &static_key, timeout)
+        session::establish_join(
+            &client,
+            code.as_deref().unwrap_or(""),
+            &static_key,
+            timeout,
+            stun_server,
+        )
     };
 
     match result {
@@ -366,7 +381,7 @@ fn main() {
 
     // Establish the peer session if requested. Held for the process lifetime;
     // the media pipeline over this channel is a later milestone.
-    let _peer_session = establish_peer_session(&cfg.session_mode);
+    let _peer_session = establish_peer_session(&cfg.session_mode, cfg.stun_server);
 
     let thermal_mon = ThermalMonitor::new();
     let mut cpu_ceiling = CpuCeiling::constrained();
