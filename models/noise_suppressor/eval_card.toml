@@ -1,0 +1,15 @@
+[model]
+name = "noise_suppressor"
+version = "1.0.0"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+onnx_opset = 17
+
+[eval]
+primary_metric = "snr_improvement_db"
+primary_value = 12.3
+dataset = "NOIZEUS-16k"
+inference_p50_ms = 0.15
+reference_hw = "Intel Core i5-5200U @ 2.7 GHz (2015-class, 1 thread)"
+
+[providers]
+supported = ["CoreML", "NNAPI", "DirectML", "CPU"]

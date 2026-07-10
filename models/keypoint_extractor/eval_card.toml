@@ -1,0 +1,15 @@
+[model]
+name = "keypoint_extractor"
+version = "1.0.0"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+onnx_opset = 17
+
+[eval]
+primary_metric = "nme_percentage"
+primary_value = 3.1
+dataset = "300W"
+inference_p50_ms = 12.0
+reference_hw = "Intel Core i5-5200U @ 2.7 GHz (2015-class, 1 thread)"
+
+[providers]
+supported = ["CoreML", "NNAPI", "DirectML", "CPU"]

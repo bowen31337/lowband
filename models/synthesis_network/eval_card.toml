@@ -1,0 +1,15 @@
+[model]
+name = "synthesis_network"
+version = "1.0.0"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+onnx_opset = 17
+
+[eval]
+primary_metric = "fvd"
+primary_value = 45.2
+dataset = "VoxCeleb2"
+inference_p50_ms = 18.0
+reference_hw = "Intel Core i5-5200U @ 2.7 GHz (2015-class, 1 thread)"
+
+[providers]
+supported = ["CoreML", "NNAPI", "DirectML", "CPU"]

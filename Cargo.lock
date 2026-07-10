@@ -615,6 +615,7 @@ version = "0.1.0"
 dependencies = [
  "lowband-lbtp",
  "lowband-messaging",
+ "lowband-nn",
  "lowband-platform",
  "lowband-xfer",
 ]
@@ -652,6 +653,10 @@ version = "0.1.0"
 
 [[package]]
 name = "lowband-messaging"
+version = "0.1.0"
+
+[[package]]
+name = "lowband-nn"
 version = "0.1.0"
 
 [[package]]
