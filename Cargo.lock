@@ -685,6 +685,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "http-body-util",
+ "lowband-crypto",
  "lowband-lbtp",
  "lowband-platform",
  "lowband-signaling",

@@ -10,11 +10,12 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 lowband-signaling = { path = "../../core/signaling" }
+lowband-crypto = { path = "../../core/crypto" }
 lowband-lbtp = { path = "../../core/lbtp" }
 lowband-platform = { path = "../../core/platform" }
 lowband-xfer = { path = "../../core/xfer" }
 axum = "0.7"
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "macros", "net"] }
 serde_json = "1"
