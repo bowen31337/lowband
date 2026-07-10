@@ -23,6 +23,7 @@
 
 mod dataplane;
 mod file_transfer;
+mod inbound;
 mod session;
 mod stun;
 
@@ -150,6 +151,35 @@ fn parse_args() -> Config {
         session_mode,
         stun_server,
     }
+}
+
+/// Run the unified inbound router on an established session, in the
+/// background, until shutdown. Received control messages and file-transfer
+/// progress are logged; inbound files land under `data_dir/inbox.*`.
+fn spawn_session_worker(mut session: lowband_crypto::SecureSession, data_dir: PathBuf) {
+    use lowband_messaging::clipboard::ClipboardGrant;
+
+    thread::spawn(move || {
+        // A short read timeout keeps the loop responsive to shutdown; recv
+        // returns a transient session error on timeout, which we ignore.
+        let _ = session.set_read_timeout(Some(Duration::from_secs(1)));
+        let inbox = data_dir.join("inbox.bin");
+        let resume = data_dir.join("inbox.resume");
+        let mut router =
+            inbound::InboundRouter::new(file_transfer::FileReceiver::new(inbox, resume));
+        // The daemon accepts clipboard content by default for this session;
+        // scoped consent toggling arrives with the consent-UX wiring.
+        router.clipboard.set_grant(Some(ClipboardGrant::new()));
+
+        while !SHUTDOWN.load(Ordering::Relaxed) {
+            match router.recv_and_handle(&mut session) {
+                Ok(handled) => eprintln!("lowbandd: inbound {handled:?}"),
+                // Timeout / transient socket error — poll again.
+                Err(file_transfer::XferError::Session(_)) => continue,
+                Err(e) => eprintln!("lowbandd: inbound frame error: {e}"),
+            }
+        }
+    });
 }
 
 /// Establish the peer session (blocking) before the governor loop starts.
@@ -379,9 +409,13 @@ fn main() {
 
     install_signal_handlers();
 
-    // Establish the peer session if requested. Held for the process lifetime;
-    // the media pipeline over this channel is a later milestone.
-    let _peer_session = establish_peer_session(&cfg.session_mode, cfg.stun_server);
+    // Establish the peer session if requested, then run the inbound router on
+    // it so the daemon actually processes the encrypted channel (chat,
+    // clipboard, panic, file transfer). The media pipeline is a later
+    // milestone; the control/data planes are live now.
+    if let Some(session) = establish_peer_session(&cfg.session_mode, cfg.stun_server) {
+        spawn_session_worker(session, cfg.data_dir.clone());
+    }
 
     let thermal_mon = ThermalMonitor::new();
     let mut cpu_ceiling = CpuCeiling::constrained();

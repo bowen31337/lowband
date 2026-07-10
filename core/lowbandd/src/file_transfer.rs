@@ -119,6 +119,10 @@ impl XferFrame {
 }
 
 /// Send `path` over `session` as a sequence of [`XferFrame`]s.
+///
+/// Outbound half of the file plane — exercised by tests today; the daemon
+/// binds it to a technician-initiated push when the UI-shell IPC lands.
+#[allow(dead_code)]
 pub fn send_file(session: &mut SecureSession, path: &Path) -> Result<(), XferError> {
     let mut data = Vec::new();
     File::open(path)?.read_to_end(&mut data)?;

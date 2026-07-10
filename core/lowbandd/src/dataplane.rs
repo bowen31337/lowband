@@ -18,6 +18,11 @@ use lowband_messaging::panic_key::{PanicController, PanicNoticeReceiver};
 use lowband_messaging::MessageFrame;
 
 /// Send one application message to the peer over the encrypted channel.
+///
+/// Outbound half of the control plane — exercised by tests today; the daemon
+/// binds it to an input source (IPC from the UI shell / stdin) when that
+/// wiring lands.
+#[allow(dead_code)]
 pub fn send_message(
     session: &mut SecureSession,
     frame: &MessageFrame,
@@ -42,7 +47,11 @@ pub enum Delivered {
     Rejected(&'static str),
 }
 
-/// Receive and dispatch one application message.
+/// Receive and dispatch one *control-plane* message (message frames only).
+///
+/// Superseded for the daemon runtime by [`crate::inbound::InboundRouter`],
+/// which also routes file frames on the shared channel; retained as the
+/// message-only receiver (and covered by its own test).
 ///
 /// Blocks on the session socket for the next datagram, authenticates and
 /// decodes it, then routes it through the relevant subsystem:
@@ -53,6 +62,7 @@ pub enum Delivered {
 ///
 /// A datagram that fails authentication or decode surfaces as an error; a
 /// well-formed frame rejected by a gate surfaces as [`Delivered::Rejected`].
+#[allow(dead_code)]
 pub fn recv_and_dispatch(
     session: &mut SecureSession,
     clipboard: &ClipboardSession,
@@ -92,7 +102,9 @@ pub fn dispatch(
     }
 }
 
-/// Error receiving/decoding an application frame.
+/// Error receiving/decoding an application frame (used by the message-only
+/// [`recv_and_dispatch`]).
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum DataPlaneError {
     Session(lowband_crypto::SessionError),

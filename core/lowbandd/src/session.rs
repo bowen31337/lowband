@@ -35,9 +35,9 @@ pub enum EstablishError {
     Session(lowband_crypto::SessionError),
     Io(std::io::Error),
     /// The peer did not publish the expected candidate before `timeout`.
+    /// (A malformed `key:` candidate simply never satisfies the wait and
+    /// surfaces here once the deadline passes.)
     Timeout(&'static str),
-    /// A `key:` candidate was malformed.
-    BadPeerKey,
 }
 
 impl std::fmt::Display for EstablishError {
@@ -47,7 +47,6 @@ impl std::fmt::Display for EstablishError {
             EstablishError::Session(e) => write!(f, "session: {e}"),
             EstablishError::Io(e) => write!(f, "io: {e}"),
             EstablishError::Timeout(what) => write!(f, "timed out waiting for {what}"),
-            EstablishError::BadPeerKey => write!(f, "peer published a malformed static key"),
         }
     }
 }
