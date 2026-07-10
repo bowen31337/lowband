@@ -4,6 +4,9 @@
 //! mints short-lived TURN credentials.  Holds no media — it exits the path
 //! the moment the peers connect directly.
 
+pub mod client;
+pub use client::{ClientError, JoinInfo, SignalingClient, TurnCredential};
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -148,6 +151,7 @@ pub fn router(state: AppState) -> Router {
         .route("/signal/join/:code", get(get_join))
         .route("/signal/offer", post(post_offer))
         .route("/signal/answer", post(post_answer))
+        .route("/signal/answer/:code", get(get_answer))
         .route("/signal/candidate", post(post_candidate))
         .route("/signal/turn", post(post_turn))
         .route("/signal/connected", post(post_connected))
@@ -193,6 +197,17 @@ async fn get_join(
         },
         None => Err(StatusCode::NOT_FOUND),
     }
+}
+
+// Called by the offering peer (technician) to poll for the joiner's answer.
+// Returns `{"answer": null}` until the joiner has posted one, then the SDP.
+// This completes the rendezvous loop — `post_answer` stores it, this reads it.
+async fn get_answer(
+    State(st): State<AppState>,
+    Path(code): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    check_code(&st, &code)?;
+    Ok(Json(serde_json::json!({ "answer": st.pending_answer(&code) })))
 }
 
 #[derive(Deserialize)]

@@ -15,6 +15,7 @@ pub mod known_peers;
 pub mod noise_ik;
 pub mod relay_guard;
 pub mod short_auth_string;
+pub mod udp_session;
 
 pub use key_exchange::{EphemeralKeypair, SessionState, TrafficKeys};
 pub use known_peers::{KnownPeer, KnownPeerStore, PeerId};
@@ -26,3 +27,4 @@ pub use relay_guard::{
     DatagramCipher, E2eeRelayBridge, RelayPayload, RELAY_GUARD_OVERHEAD_BYTES,
 };
 pub use short_auth_string::ShortAuthString;
+pub use udp_session::{SecureSession, SessionError};

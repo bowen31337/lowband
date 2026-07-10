@@ -197,6 +197,17 @@ impl DatagramCipher {
         aead.decrypt(&nonce, ciphertext_with_tag).ok()
     }
 
+    /// Decrypt raw datagram bytes received off the wire.
+    ///
+    /// The receive path reads bytes from a socket, not a [`RelayPayload`]
+    /// (which can only be produced locally by [`seal`](Self::seal)).  This is
+    /// the counterpart used by the live transport: it accepts the same
+    /// `[nonce 12 B][ciphertext N B][tag 16 B]` layout `seal` produces and
+    /// returns the plaintext, or `None` on any authentication failure.
+    pub fn open_bytes(&self, wire: &[u8]) -> Option<Vec<u8>> {
+        self.open(&RelayPayload(wire.to_vec()))
+    }
+
     /// Number of datagrams sealed so far (equals the next nonce counter).
     pub fn counter(&self) -> u64 {
         self.counter
