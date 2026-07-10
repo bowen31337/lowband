@@ -25,8 +25,8 @@ pub use audit::{AuditEntry, AuditLog};
 pub use channel::{ChannelError, Message, ReliableChannel};
 pub use chat::{ChatError, ChatMessage, ChatSession, CHAT_MAX_TEXT_BYTES, SURVIVAL_TIER_BPS};
 pub use clipboard::{
-    ClipboardError, ClipboardGrant, ClipboardSession,
-    CLIPBOARD_MAX_TEXT_BYTES, CONSTRAINED_TIER_BPS,
+    ClipboardError, ClipboardFileEntry, ClipboardFileOffer, ClipboardGrant, ClipboardSession,
+    CLIPBOARD_MAX_FILES, CLIPBOARD_MAX_FILE_BYTES, CLIPBOARD_MAX_TEXT_BYTES, CONSTRAINED_TIER_BPS,
 };
 pub use grants::{
     CapabilityError,

@@ -122,15 +122,20 @@ The following eval findings have been implemented with tests (all pushed to
 | FR-6 "resume PARTIAL, no restart-continue" | **resume done** | `ResumableTransfer` persists manifest + per-chunk progress WAL; survives restart, crash-residue safe, refuses manifest mismatch. |
 | FR-12 "SipHash MAC, not ed25519" | **ed25519** | `export_signed_json`/`verify_signed_export` add a real asymmetric signature over the canonical payload; rejects tampering, swapped signer keys, malformed docs. |
 | CI enforcement "absent" | **wired** | `.github/workflows/ci.yml` runs `cargo test --workspace` on push/PR. |
+| "code entry → session path not in the daemon" | **in daemon** | `core/lowbandd/src/session.rs` `establish_host`/`establish_join` are the daemon's production path; `--signaling`/`--host`/`--join` flags select it; integration test drives both halves over a real server + UDP. |
+| FR-9 clipboard **file** sync (M5) "MISSING" | **metadata + safety done** | `ClipboardFileOffer`/`apply_remote_files` gate a file offer by the clipboard grant, count, aggregate size, and **path-traversal-safe names** (rejects `../`, absolute paths, separators, control chars). Byte transfer reuses the existing `xfer` chunk layer. |
 
-**Still open (the dominant blockers, unchanged):** real codecs
-(libopus/SVT-AV1/dav1d/H.264), speaker playback, session assembly *inside the
-`lowbandd` daemon* (the SecureSession path is proven in tests but the daemon
-still runs only the governor), an ICE agent for real NAT traversal, per-monitor
-capture selection, the neural runtime behind its gates, the model-based
-verification gates replaced with real ViSQOL/OCR/VMAF over netem, NFR-8 CPU
-gate — and the two v1.2 (M5) headline features, mesh group calls and clipboard
-file sync, which remain greenfield.
+**Still open (the dominant blockers):** real codecs
+(libopus/SVT-AV1/dav1d/H.264) and speaker playback — so no media actually
+flows over the now-established secure channel; the media data-plane loop in
+the daemon (the channel stands up but carries no audio/screen/input yet); an
+ICE agent for real NAT traversal (candidates are exchanged but not gathered
+from STUN); per-monitor capture selection; the neural runtime behind its
+gates; the model-based verification gates replaced with real ViSQOL/OCR/VMAF
+over netem; the NFR-8 CPU gate; and of the two v1.2 (M5) headline features,
+**mesh group calls remain greenfield** (clipboard file sync now has its
+capability-gated metadata handshake, though it still needs wiring to the OS
+clipboard and the `xfer` pull on both ends).
 
 ## Honest summary
 

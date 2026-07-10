@@ -66,6 +66,17 @@ pub const CLIPBOARD_MAX_TEXT_BYTES: usize = 4_096;
 /// 150 kbps corresponds to the "pleasant at 150 kbps" reference from the PRD.
 pub const CONSTRAINED_TIER_BPS: u64 = 150_000;
 
+/// Maximum number of files in a single clipboard file offer (FR-9 files, v1.2).
+pub const CLIPBOARD_MAX_FILES: usize = 64;
+
+/// Maximum aggregate byte size of a clipboard file offer.
+///
+/// Unlike inline text, clipboard *files* transfer over the bulk channel
+/// (channel 7) via the `xfer` chunking layer, so the cap is generous — it
+/// only bounds a single copy/paste gesture, guarding against an accidental
+/// multi-gigabyte paste dragging the metered link.
+pub const CLIPBOARD_MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
+
 /// Capability token that proves the remote peer's clipboard permission is
 /// currently active.  Issued by the consent subsystem; drop to revoke.
 ///
@@ -110,6 +121,23 @@ pub enum ClipboardError {
     /// The assisted user withdrew consent; the token bound to the same
     /// [`ConsentRevocationHandle`] is invalidated with no grace window.
     ConsentWithdrawn,
+    /// The file offer contained more than [`CLIPBOARD_MAX_FILES`] entries.
+    TooManyFiles {
+        /// Number of files in the rejected offer.
+        count: usize,
+    },
+    /// The offer's aggregate size exceeds [`CLIPBOARD_MAX_FILE_BYTES`].
+    FilesTooLarge {
+        /// Total bytes of the rejected offer.
+        total: u64,
+    },
+    /// A file entry carried an unsafe name (path traversal, absolute path,
+    /// separator, or control character).  The whole offer is rejected — a
+    /// clipboard paste must never write outside the receiver's drop directory.
+    UnsafeFileName {
+        /// The offending name, for logging.
+        name: String,
+    },
 }
 
 impl std::fmt::Display for ClipboardError {
@@ -123,8 +151,60 @@ impl std::fmt::Display for ClipboardError {
             Self::ConsentWithdrawn => {
                 f.write_str("remote clipboard rejected: assisted user has withdrawn consent")
             }
+            Self::TooManyFiles { count } => write!(
+                f,
+                "clipboard file offer has {count} files, exceeds limit of {CLIPBOARD_MAX_FILES}"
+            ),
+            Self::FilesTooLarge { total } => write!(
+                f,
+                "clipboard file offer is {total} bytes, exceeds limit of {CLIPBOARD_MAX_FILE_BYTES}"
+            ),
+            Self::UnsafeFileName { name } => {
+                write!(f, "clipboard file offer rejected: unsafe file name {name:?}")
+            }
         }
     }
+}
+
+/// One file in a clipboard file offer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardFileEntry {
+    /// Bare file name as presented by the sender (validated on receipt).
+    pub name: String,
+    /// File size in bytes.
+    pub size: u64,
+}
+
+/// A set of files placed on the clipboard by the remote peer, offered for
+/// paste on the local side.  The bytes themselves are pulled separately over
+/// the bulk `xfer` channel; this is the capability-gated metadata handshake.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ClipboardFileOffer {
+    pub entries: Vec<ClipboardFileEntry>,
+}
+
+impl ClipboardFileOffer {
+    /// Total bytes across all entries.
+    pub fn total_bytes(&self) -> u64 {
+        self.entries.iter().map(|e| e.size).sum()
+    }
+}
+
+/// Reject a file name that could escape the receiver's drop directory or is
+/// otherwise unsafe to write. Accepts only a bare, single-component name.
+fn safe_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+        && !name.contains("..")
+        // No leading/trailing whitespace or dots (Windows trims these, which
+        // can change the target file).
+        && name.trim() == name
+        && !name.chars().any(|c| c.is_control())
 }
 
 impl std::error::Error for ClipboardError {}
@@ -169,20 +249,60 @@ impl ClipboardSession {
     /// clipboard (platform specifics live outside this crate).  On failure the
     /// frame must be discarded without modifying local clipboard state.
     pub fn apply_remote(&self, text: &str) -> Result<(), ClipboardError> {
-        match &self.grant {
-            None => return Err(ClipboardError::NoActiveGrant),
-            Some(g) => {
-                if g.revocation.as_ref().map_or(false, |r| r.is_withdrawn()) {
-                    return Err(ClipboardError::ConsentWithdrawn);
-                }
-            }
-        }
+        self.check_grant()?;
         if text.len() > CLIPBOARD_MAX_TEXT_BYTES {
             return Err(ClipboardError::TextTooLong { len: text.len() });
         }
         // Caller applies `text` to the OS clipboard.
         let _ = text;
         Ok(())
+    }
+
+    /// Accept an incoming remote clipboard *file* offer (FR-9 files, v1.2).
+    ///
+    /// Enforces, in order: the same grant gate as text; a file-count cap
+    /// ([`CLIPBOARD_MAX_FILES`]); an aggregate-size cap
+    /// ([`CLIPBOARD_MAX_FILE_BYTES`]); and **name safety** — every entry must
+    /// be a bare, single-component file name, so a malicious peer cannot use a
+    /// clipboard paste to write outside the receiver's drop directory
+    /// (`../`, absolute paths, separators, and control characters are all
+    /// rejected, failing the whole offer).
+    ///
+    /// On success the caller pulls each file's bytes over the bulk `xfer`
+    /// channel and writes it into the drop directory under its validated name.
+    /// On any failure nothing is written.
+    pub fn apply_remote_files(
+        &self,
+        offer: &ClipboardFileOffer,
+    ) -> Result<(), ClipboardError> {
+        self.check_grant()?;
+        if offer.entries.len() > CLIPBOARD_MAX_FILES {
+            return Err(ClipboardError::TooManyFiles { count: offer.entries.len() });
+        }
+        let total = offer.total_bytes();
+        if total > CLIPBOARD_MAX_FILE_BYTES {
+            return Err(ClipboardError::FilesTooLarge { total });
+        }
+        for entry in &offer.entries {
+            if !safe_file_name(&entry.name) {
+                return Err(ClipboardError::UnsafeFileName { name: entry.name.clone() });
+            }
+        }
+        Ok(())
+    }
+
+    /// Shared grant/consent gate for both text and file paths.
+    fn check_grant(&self) -> Result<(), ClipboardError> {
+        match &self.grant {
+            None => Err(ClipboardError::NoActiveGrant),
+            Some(g) => {
+                if g.revocation.as_ref().map_or(false, |r| r.is_withdrawn()) {
+                    Err(ClipboardError::ConsentWithdrawn)
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
 }
 
@@ -193,6 +313,109 @@ impl Default for ClipboardSession {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod file_tests {
+    use super::*;
+
+    fn granted() -> ClipboardSession {
+        let mut s = ClipboardSession::new();
+        s.set_grant(Some(ClipboardGrant::new()));
+        s
+    }
+
+    fn offer(files: &[(&str, u64)]) -> ClipboardFileOffer {
+        ClipboardFileOffer {
+            entries: files
+                .iter()
+                .map(|(n, sz)| ClipboardFileEntry { name: n.to_string(), size: *sz })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn file_offer_requires_grant() {
+        let s = ClipboardSession::new();
+        assert_eq!(
+            s.apply_remote_files(&offer(&[("report.pdf", 1024)])),
+            Err(ClipboardError::NoActiveGrant)
+        );
+    }
+
+    #[test]
+    fn valid_file_offer_accepted_under_grant() {
+        let s = granted();
+        assert!(s.apply_remote_files(&offer(&[("report.pdf", 1024), ("log.txt", 512)])).is_ok());
+    }
+
+    #[test]
+    fn path_traversal_names_are_rejected() {
+        let s = granted();
+        for bad in [
+            "../secret",
+            "../../etc/passwd",
+            "/etc/passwd",
+            "sub/dir.txt",
+            "back\\slash.txt",
+            "..",
+            ".",
+            "nul\0byte",
+            "trailing ",
+            " leading",
+            "with\nnewline",
+        ] {
+            let result = s.apply_remote_files(&offer(&[(bad, 10)]));
+            assert!(
+                matches!(result, Err(ClipboardError::UnsafeFileName { .. })),
+                "name {bad:?} must be rejected, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_names_pass_safety() {
+        let s = granted();
+        for ok in ["report.pdf", "my-file_v2.txt", "IMG 1234.jpeg", "résumé.doc", "a.b.c"] {
+            assert!(
+                s.apply_remote_files(&offer(&[(ok, 10)])).is_ok(),
+                "name {ok:?} should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn too_many_files_rejected() {
+        let s = granted();
+        let many: Vec<(&str, u64)> = (0..CLIPBOARD_MAX_FILES + 1).map(|_| ("f.txt", 1)).collect();
+        assert!(matches!(
+            s.apply_remote_files(&offer(&many)),
+            Err(ClipboardError::TooManyFiles { .. })
+        ));
+    }
+
+    #[test]
+    fn oversized_offer_rejected() {
+        let s = granted();
+        let huge = offer(&[("big.bin", CLIPBOARD_MAX_FILE_BYTES + 1)]);
+        assert!(matches!(
+            s.apply_remote_files(&huge),
+            Err(ClipboardError::FilesTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn revoked_consent_blocks_file_offer() {
+        let handle = ConsentRevocationHandle::new();
+        let mut s = ClipboardSession::new();
+        s.set_grant(Some(ClipboardGrant::with_consent(handle.clone())));
+        assert!(s.apply_remote_files(&offer(&[("ok.txt", 1)])).is_ok());
+        handle.withdraw();
+        assert_eq!(
+            s.apply_remote_files(&offer(&[("ok.txt", 1)])),
+            Err(ClipboardError::ConsentWithdrawn)
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
