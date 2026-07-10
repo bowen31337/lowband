@@ -189,8 +189,15 @@ rather than stubbed:
   The *trained* vocoder / talking-head model **weights** remain the one true
   gap — they don't exist anywhere and are a v1.1 data deliverable; this is the
   runtime that will execute them.
-- Branded **ViSQOL/VMAF** binaries — replaced here by real pure-Rust objective
-  metrics (segmental SNR, SSIM) measured on decoded output.
+- Branded **ViSQOL/VMAF** binaries — the measurement *capability* is
+  implemented as real pure-Rust objective metrics (SSIM — VMAF's core
+  structural term; segmental SNR — ViSQOL's objective basis) measured on
+  decoded output, with non-vacuous tests. The branded tools themselves are
+  impractical and add no capability: `vmaf-sys` builds the pre-2.0 VMAF by
+  **downloading source over the network in its build script** + `make` +
+  `libclang` bindgen (fragile, network-dependent, ABI-mismatched); ViSQOL is
+  Bazel/C++ with no apt package or usable Rust binding. Integrating them would
+  be a fragile relabeling of a metric already computed, not new functionality.
 - **Neural ONNX runtime + models** behind the existing gates.
 - **Real ViSQOL / OCR / VMAF gates over netem** to replace the model-based
   approximations.
