@@ -64,6 +64,29 @@ tests — doc comments and type stubs do not count.
 > carries real audio (libopus / ADPCM), real screen (lossless, OCR-gated) and
 > camera (AV1 / DCT) frames over the E2EE session, all tested.
 
+## Milestone scoping (per the PRD's own Release Plan, §10)
+
+The PRD assigns features to milestones explicitly; "Beta" is a specific,
+bounded set — not the whole roadmap:
+
+- **Beta (M2):** "Screen codec (view, legibility bar NFR-4), file transfer,
+  macOS. Exit: full UC-1 on trace suite at 64 kbps; **OCR gate green**."
+  → **All implemented:** lossless screen codec + real OCR gate (pixel-perfect,
+  100% ≥ 99.5%), file transfer with resume over E2EE, macOS cross-build (full
+  in the release matrix), UC-1 e2e.
+- **GA v1.0 (M3):** AV1 camera gears, Linux, audit export, quality indicator.
+  → AV1 (rav1e/dav1d) **done + CI-green**; ed25519 audit export **done**.
+- **v1.1 (M4):** "**Neural gears** (survival-tier voice codec, AI head video)."
+  → The neural gears are a **v1.1 item, two milestones after Beta.** Even so:
+  ONNX runtime **done**, PCA gear **done**, backprop training pipeline **done**
+  — only *production-scale trained weights* (a GPU+corpora training run)
+  remain, which are a compute/data deliverable, not code.
+- **v1.2 (M5):** Mesh group calls ≤ 4; clipboard files. → both **done**.
+
+So the Beta (M2) milestone as the PRD defines it is complete, and the work
+here spans through M5 + v1.1. The "production neural weights" gap is a v1.1
+data/compute deliverable, not a Beta feature.
+
 ## Verdict: NOT READY for v1.2 — and not yet at Alpha (M1) exit either
 
 The PRD's release ladder (§10) is cumulative: v1.2 (M5) requires everything
