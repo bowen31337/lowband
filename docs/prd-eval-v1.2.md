@@ -166,9 +166,15 @@ rather than stubbed:
   encode→decode roundtrip — **passing** (needed a low-delay dav1d config +
   drain loop to un-buffer the single still frame). FR-8/AV1 is a GA/M3 item;
   the interim block-DCT ships in the default build.
-- **Mic/speaker audio device I/O** — needs audio hardware to build and observe
-  (`mic_capture.rs` has the capture FFI; playback FFI + the capture loop are
-  the remaining wiring).
+- **Mic/speaker audio device I/O** — **implemented, CI build-verified.**
+  `core/lowbandd/src/audio_io.rs` has real `cpal`-based `Speaker`/`Microphone`
+  (open the default device, build an f32 stream, convert to/from i16, play/
+  record) plus device-independent plumbing (sample conversion, the PCM ring
+  buffer) that is always compiled and unit-tested. The `audio-io` CI job
+  installs `libasound2-dev` and build+run-tests the real cpal/ALSA path;
+  since a runner has no audio device, that path exercises the "no device"
+  branch — proving the integration compiles and runs against the real audio
+  library. Actual playback/recording needs a machine with a speaker/mic.
 - **ONNX neural runtime + models** — needs onnxruntime (C++).
 - Branded **ViSQOL/VMAF** binaries — replaced here by real pure-Rust objective
   metrics (segmental SNR, SSIM) measured on decoded output.

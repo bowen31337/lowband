@@ -66,3 +66,23 @@ jobs:
           cargo test -p lowbandd --features av1
           --target x86_64-unknown-linux-gnu
           --config 'host.rustflags=[]'
+
+  # Builds and tests the real mic/speaker device I/O (cpal over ALSA) — the
+  # system audio lib the local environment can't install. The runner has no
+  # audio device, so the device path exercises the "no device" branch; the
+  # value is that the real cpal/ALSA integration compiles and runs.
+  audio-io:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ALSA dev headers
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: audio
+      - name: Test the audio device I/O (cpal / ALSA)
+        run: >
+          cargo test -p lowbandd --features audio
+          --target x86_64-unknown-linux-gnu
+          --config 'host.rustflags=[]'

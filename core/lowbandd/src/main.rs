@@ -37,6 +37,9 @@ mod opus_codec;
 // block-DCT codec is used when these features are off.
 #[cfg(feature = "av1-encode")]
 mod av1_codec;
+// Mic/speaker device I/O plumbing (device-independent parts always compiled;
+// the cpal device code is behind the `audio` feature).
+mod audio_io;
 mod picture;
 // Verification-only quality gates (SSIM / segmental SNR); compiled for tests.
 #[cfg(test)]

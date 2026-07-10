@@ -21,6 +21,10 @@ opus = ["dep:opus"]
 # CI `camera-av1` job. Without these, photographic tiles use the interim DCT.
 av1-encode = ["dep:rav1e"]
 av1 = ["av1-encode", "dep:dav1d"]
+# Real mic/speaker device I/O via cpal (ALSA/CoreAudio/WASAPI). Off by default
+# (needs the system audio lib); the CI `audio-io` job installs libasound2-dev
+# and build-tests it. The device-independent plumbing is always compiled.
+audio = ["dep:cpal"]
 
 [dependencies]
 lowband-platform = { path = "../platform" }
@@ -33,6 +37,8 @@ opus = { version = "0.3", optional = true }
 # rav1e: pure-Rust AV1 encoder (no C). dav1d: system libdav1d decoder.
 rav1e = { version = "0.8", optional = true, default-features = false }
 dav1d = { version = "0.11", optional = true }
+# Cross-platform audio device I/O (see the `audio` feature above).
+cpal = { version = "0.18", optional = true }
 
 [dev-dependencies]
 axum = "0.7"
