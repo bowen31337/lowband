@@ -29,6 +29,10 @@ mod inbound;
 // bench gates.
 #[cfg(test)]
 mod ocr;
+// Production voice codec (system libopus); the interim ADPCM codec is used
+// when this feature is off.
+#[cfg(feature = "opus")]
+mod opus_codec;
 mod picture;
 // Verification-only quality gates (SSIM / segmental SNR); compiled for tests.
 #[cfg(test)]

@@ -18,7 +18,14 @@
 use lowband_crypto::SecureSession;
 use lowband_platform::{DtxAction, DtxEncoder};
 
-use crate::adpcm::{AdpcmDecoder, AdpcmEncoder};
+// Voice codec is selected at compile time: production libopus with
+// `--features opus`, else the pure-Rust interim ADPCM codec. Both expose the
+// same `new` / `encode` / `decode` surface, so the pipeline below is codec
+// agnostic (FR-2).
+#[cfg(not(feature = "opus"))]
+use crate::adpcm::{AdpcmDecoder as CodecDecoder, AdpcmEncoder as CodecEncoder};
+#[cfg(feature = "opus")]
+use crate::opus_codec::{OpusDecoder as CodecDecoder, OpusEncoder as CodecEncoder};
 
 /// Samples in a 20 ms frame at 8 kHz (narrowband voice).
 pub const FRAME_SAMPLES: usize = 160;
@@ -104,7 +111,7 @@ pub enum SendOutcome {
 #[allow(dead_code)]
 pub struct VoiceSender {
     dtx: DtxEncoder,
-    adpcm: AdpcmEncoder,
+    codec: CodecEncoder,
 }
 
 impl Default for VoiceSender {
@@ -116,7 +123,7 @@ impl Default for VoiceSender {
 #[allow(dead_code)]
 impl VoiceSender {
     pub fn new() -> Self {
-        Self { dtx: DtxEncoder::new(), adpcm: AdpcmEncoder::new() }
+        Self { dtx: DtxEncoder::new(), codec: CodecEncoder::new() }
     }
 
     /// Process and transmit one 20 ms PCM frame. Silent frames are suppressed
@@ -130,7 +137,7 @@ impl VoiceSender {
         let voice_active = level >= VAD_RMS_THRESHOLD;
         match self.dtx.observe_vad(voice_active) {
             DtxAction::Voice => {
-                let data = self.adpcm.encode(pcm);
+                let data = self.codec.encode(pcm);
                 session.send(&VoiceFrame::Voice { samples: pcm.len() as u16, data }.encode())?;
                 Ok(SendOutcome::Voice)
             }
@@ -145,7 +152,7 @@ impl VoiceSender {
 
 /// Receiver-side voice pipeline: session → ADPCM decode → PCM (or comfort noise).
 pub struct VoiceReceiver {
-    adpcm: AdpcmDecoder,
+    codec: CodecDecoder,
     comfort_rms: u16,
 }
 
@@ -157,7 +164,7 @@ impl Default for VoiceReceiver {
 
 impl VoiceReceiver {
     pub fn new() -> Self {
-        Self { adpcm: AdpcmDecoder::new(), comfort_rms: 0 }
+        Self { codec: CodecDecoder::new(), comfort_rms: 0 }
     }
 
     /// Decode a received voice frame into 20 ms of PCM. A SID frame yields a
@@ -165,7 +172,7 @@ impl VoiceReceiver {
     /// comfort-noise synthesis.
     pub fn decode(&mut self, frame: VoiceFrame) -> Vec<i16> {
         match frame {
-            VoiceFrame::Voice { samples, data } => self.adpcm.decode(&data, samples as usize),
+            VoiceFrame::Voice { samples, data } => self.codec.decode(&data, samples as usize),
             VoiceFrame::Sid { rms } => {
                 self.comfort_rms = rms;
                 vec![0i16; FRAME_SAMPLES]

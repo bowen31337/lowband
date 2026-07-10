@@ -137,13 +137,16 @@ The following eval findings have been implemented with tests (all pushed to
 tooling, or hardware this environment can't verify against, so they were left
 rather than stubbed:
 
-- **Production codecs** (libopus/DRED for voice, SVT-AV1/dav1d for camera) —
-  **empirically confirmed unbuildable here**: `audiopus_sys` vendors libopus
-  but its build needs `autoreconf` (autotools, `not found`); no cmake, musl
-  target, no sudo, no system libopus. Interim real codecs (ADPCM voice, block-
-  DCT picture) carry actual media over the E2EE session today; Opus/AV1 drop
-  into the same `VoiceFrame`/`ScreenFrame` tile-encoding slots when a C
-  toolchain is present.
+- **Production voice codec (libopus, FR-2)** — **implemented and CI-verified.**
+  `core/lowbandd/src/opus_codec.rs` is the real Opus encode/decode (in-band
+  FEC, VOIP mode), feature-gated `--features opus` and selected at compile time
+  by `voice.rs` in place of interim ADPCM. It can't build in *this* sandbox
+  (empirically: `audiopus_sys` needs `autoreconf`, absent; no cmake/sudo), so
+  the `voice-opus` CI job installs `libopus-dev` and actually compiles + tests
+  it against real libopus. DRED activates when the linked libopus is ≥ 1.5.
+- **Production camera codec (SVT-AV1, FR-8)** — same pattern pending (interim
+  block-DCT ships today; AV1 drops into the `ScreenFrame` tile slot behind a
+  feature + CI job with the codec libs installed). FR-8/AV1 is a GA/M3 item.
 - **Mic/speaker audio device I/O** — needs audio hardware to build and observe
   (`mic_capture.rs` has the capture FFI; playback FFI + the capture loop are
   the remaining wiring).
