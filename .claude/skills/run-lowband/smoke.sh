@@ -31,6 +31,7 @@ PROBE="$REPO/.claude/skills/run-lowband/shell-probe/target/x86_64-unknown-linux-
 
 echo "── launch signaling on :$PORT"
 SIGNALING_BIND="127.0.0.1:$PORT" TURN_SHARED_SECRET=smoke-secret \
+  SIGNALING_DB="$WORK/signaling-db" \
   "$BIN/lowband-signaling" >"$WORK/signaling.log" 2>&1 &
 PIDS+=($!)
 for _ in $(seq 1 50); do

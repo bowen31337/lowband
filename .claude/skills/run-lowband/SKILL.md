@@ -51,7 +51,7 @@ To drive the pieces by hand instead:
 
 ```bash
 # signaling service (env: SIGNALING_BIND, TURN_SHARED_SECRET, SIGNALING_DB)
-SIGNALING_BIND=127.0.0.1:3478 TURN_SHARED_SECRET=dev \
+SIGNALING_BIND=127.0.0.1:3478 TURN_SHARED_SECRET=dev SIGNALING_DB=/tmp/lb-signaling-db \
   target/x86_64-unknown-linux-musl/debug/lowband-signaling &
 curl -s -X POST http://127.0.0.1:3478/signal/session   # → {"session_code":"..."}
 
@@ -87,9 +87,14 @@ cargo test -p lowband-e2e       # just the e2e suite: signaling + uc1–uc3, 22 
   links. That directory exists on this box (stub `.so`s for libc/libm/…).
   If a fresh machine lacks it, host-target link steps will fail — recreate
   or drop the `[host]` rustflags line.
-- **Session codes are sequential** (`100000000`, `100000001`, …) with an
-  in-memory sled DB (`SIGNALING_DB=:memory:` default) — fine for smoke
-  runs, don't treat codes as unguessable in tests.
+- **The default `SIGNALING_DB=:memory:` is NOT in-memory.** sled has no
+  `:memory:` magic string — `sled::open(":memory:")` creates a literal
+  `:memory:/` directory (with a persistent db) in the cwd. Always set
+  `SIGNALING_DB` to a real path (smoke.sh uses its temp workdir); if you
+  see a stray `:memory:/` directory in the repo, it's this — safe to `rm
+  -rf ':memory:'`.
+- **Session codes are sequential** (`100000000`, `100000001`, …) — fine
+  for smoke runs, don't treat codes as unguessable in tests.
 
 ## Troubleshooting
 
