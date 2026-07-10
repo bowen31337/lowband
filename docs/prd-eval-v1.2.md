@@ -181,7 +181,14 @@ rather than stubbed:
   since a runner has no audio device, that path exercises the "no device"
   branch — proving the integration compiles and runs against the real audio
   library. Actual playback/recording needs a machine with a speaker/mic.
-- **ONNX neural runtime + models** — needs onnxruntime (C++).
+- **ONNX neural *runtime*** — **implemented, verified.** `core/lowbandd/src/
+  neural.rs` is a real ONNX inference runtime via `tract` (pure-Rust — no C /
+  onnxruntime): `OnnxModel::from_proto`/`from_bytes` parse, optimize, and
+  execute actual ONNX graphs; the test builds a real Sigmoid model and runs
+  inference with correct numerical output (runs locally + the `neural` CI job).
+  The *trained* vocoder / talking-head model **weights** remain the one true
+  gap — they don't exist anywhere and are a v1.1 data deliverable; this is the
+  runtime that will execute them.
 - Branded **ViSQOL/VMAF** binaries — replaced here by real pure-Rust objective
   metrics (segmental SNR, SSIM) measured on decoded output.
 - **Neural ONNX runtime + models** behind the existing gates.

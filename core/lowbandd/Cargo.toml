@@ -25,6 +25,11 @@ av1 = ["av1-encode", "dep:dav1d"]
 # (needs the system audio lib); the CI `audio-io` job installs libasound2-dev
 # and build-tests it. The device-independent plumbing is always compiled.
 audio = ["dep:cpal"]
+# ONNX neural-inference runtime via tract (pure-Rust — no C/onnxruntime). Loads
+# and executes real ONNX models; the production vocoder/head-video models are a
+# separate trained-data deliverable (v1.1). Off by default to keep build times
+# down; the `neural` CI job runs it.
+onnx = ["dep:tract-onnx"]
 
 [dependencies]
 lowband-platform = { path = "../platform" }
@@ -39,6 +44,8 @@ rav1e = { version = "0.8", optional = true, default-features = false }
 dav1d = { version = "0.11", optional = true }
 # Cross-platform audio device I/O (see the `audio` feature above).
 cpal = { version = "0.18", optional = true }
+# Pure-Rust ONNX inference engine (see the `onnx` feature above).
+tract-onnx = { version = "0.23", optional = true }
 
 [dev-dependencies]
 axum = "0.7"

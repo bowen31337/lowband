@@ -86,3 +86,20 @@ jobs:
           cargo test -p lowbandd --features audio
           --target x86_64-unknown-linux-gnu
           --config 'host.rustflags=[]'
+
+  # Builds and tests the ONNX neural-inference runtime (pure-Rust tract — no
+  # C/onnxruntime, so this also runs in the normal dev environment). Verifies
+  # the runtime loads and executes a real ONNX graph end to end.
+  neural:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: neural
+      - name: Test the ONNX runtime (tract)
+        run: >
+          cargo test -p lowbandd --features onnx
+          --target x86_64-unknown-linux-gnu
+          --config 'host.rustflags=[]'

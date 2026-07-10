@@ -40,6 +40,9 @@ mod av1_codec;
 // Mic/speaker device I/O plumbing (device-independent parts always compiled;
 // the cpal device code is behind the `audio` feature).
 mod audio_io;
+// ONNX neural-inference runtime (pure-Rust tract), behind the `onnx` feature.
+#[cfg(feature = "onnx")]
+mod neural;
 mod picture;
 // Verification-only quality gates (SSIM / segmental SNR); compiled for tests.
 #[cfg(test)]
