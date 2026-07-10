@@ -11,3 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 lowband-platform = { path = "../platform" }
+lowband-signaling = { path = "../signaling" }
+lowband-crypto = { path = "../crypto" }
+
+[dev-dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["rt", "macros", "net"] }

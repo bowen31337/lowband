@@ -767,7 +767,11 @@ dependencies = [
 name = "lowbandd"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "lowband-crypto",
  "lowband-platform",
+ "lowband-signaling",
+ "tokio",
 ]
 
 [[package]]

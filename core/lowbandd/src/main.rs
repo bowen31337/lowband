@@ -21,6 +21,8 @@
 //! [`StreamBudget`](lowband_platform::ipc::IpcEvent::StreamBudget), and
 //! [`GearUpdate`](lowband_platform::ipc::IpcEvent::GearUpdate).
 
+mod session;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -31,6 +33,17 @@ use lowband_platform::{
     allocate, CpuCeiling, GearConstraints, ThermalMonitor, ThermalPressure, ThrottleAction,
     TierState,
 };
+
+/// How the daemon establishes its peer session at startup.
+#[derive(Clone)]
+enum SessionMode {
+    /// Governor-only; no peer session (default, backward compatible).
+    None,
+    /// Create a code and wait for a peer (technician side).
+    Host { signaling: String },
+    /// Join an existing code (assisted side).
+    Join { signaling: String, code: String },
+}
 
 // ── Shutdown flag ─────────────────────────────────────────────────────────────
 
@@ -65,6 +78,8 @@ struct Config {
     /// Linux only: POSIX user name to drop privileges to after socket bind.
     #[cfg(target_os = "linux")]
     drop_to: Option<String>,
+    /// How to establish the peer session at startup.
+    session_mode: SessionMode,
 }
 
 fn parse_args() -> Config {
@@ -73,6 +88,9 @@ fn parse_args() -> Config {
     let mut link_bps: u32 = 400_000;
     #[cfg(target_os = "linux")]
     let mut drop_to: Option<String> = None;
+    let mut signaling: Option<String> = None;
+    let mut host = false;
+    let mut join_code: Option<String> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -100,9 +118,21 @@ fn parse_args() -> Config {
                     drop_to = Some(v);
                 }
             }
+            // `--signaling <addr>` names the rendezvous server; `--host` creates
+            // a code, `--join <code>` enters one. Absent these, the daemon runs
+            // the governor only (unchanged default).
+            "--signaling" => signaling = args.next(),
+            "--host" => host = true,
+            "--join" => join_code = args.next(),
             _ => {}
         }
     }
+
+    let session_mode = match (signaling, host, join_code) {
+        (Some(sig), _, Some(code)) => SessionMode::Join { signaling: sig, code },
+        (Some(sig), true, None) => SessionMode::Host { signaling: sig },
+        _ => SessionMode::None,
+    };
 
     Config {
         ipc_socket,
@@ -110,6 +140,58 @@ fn parse_args() -> Config {
         link_bps,
         #[cfg(target_os = "linux")]
         drop_to,
+        session_mode,
+    }
+}
+
+/// Establish the peer session (blocking) before the governor loop starts.
+/// Logs the secure-channel outcome; media plumbing over the channel is a
+/// later milestone, so the session is held for the process lifetime.
+fn establish_peer_session(mode: &SessionMode) -> Option<lowband_crypto::SecureSession> {
+    use lowband_crypto::StaticKeypair;
+    use lowband_signaling::SignalingClient;
+
+    let timeout = Duration::from_secs(30);
+    let static_key = StaticKeypair::generate();
+
+    let (signaling, is_host, code) = match mode {
+        SessionMode::None => return None,
+        SessionMode::Host { signaling } => (signaling.clone(), true, None),
+        SessionMode::Join { signaling, code } => (signaling.clone(), false, Some(code.clone())),
+    };
+
+    let host_header = signaling.clone();
+    let client = match SignalingClient::connect(&signaling, host_header) {
+        Ok(c) => c.with_timeout(timeout),
+        Err(e) => {
+            eprintln!("lowbandd: signaling connect failed: {e}");
+            return None;
+        }
+    };
+
+    let result = if is_host {
+        session::establish_host(&client, &static_key, timeout, |code| {
+            eprintln!("lowbandd: hosting session — join code: {code}");
+        })
+        .map(|(_code, s)| s)
+    } else {
+        session::establish_join(&client, code.as_deref().unwrap_or(""), &static_key, timeout)
+    };
+
+    match result {
+        Ok(s) => {
+            let peer = s.remote_static_pubkey();
+            let peer_hex: String = peer.iter().take(4).map(|b| format!("{b:02x}")).collect();
+            eprintln!(
+                "lowbandd: secure channel established (initiator={}, peer_key={peer_hex}…)",
+                s.is_initiator()
+            );
+            Some(s)
+        }
+        Err(e) => {
+            eprintln!("lowbandd: session establishment failed: {e}");
+            None
+        }
     }
 }
 
@@ -279,6 +361,10 @@ fn main() {
     }
 
     install_signal_handlers();
+
+    // Establish the peer session if requested. Held for the process lifetime;
+    // the media pipeline over this channel is a later milestone.
+    let _peer_session = establish_peer_session(&cfg.session_mode);
 
     let thermal_mon = ThermalMonitor::new();
     let mut cpu_ceiling = CpuCeiling::constrained();
