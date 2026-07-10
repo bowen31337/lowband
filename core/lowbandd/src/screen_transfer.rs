@@ -15,8 +15,10 @@
 //!
 //! Tile encodings:
 //! - `0` palette — lossless, compact; TEXT/FLAT tiles (≤ 16 colors).
-//! - `1` raw — lossless, uncompressed BGRA; the pre-AV1 fallback for
-//!   photographic tiles that exceed the palette color limit.
+//! - `2` dct — lossy compressed (block-DCT, [`crate::picture`]); the interim
+//!   camera gear for photographic tiles that exceed the palette color limit
+//!   (SVT-AV1 drops into this slot when a C toolchain is present).
+//! - `1` raw — lossless, uncompressed BGRA; last-resort fallback.
 
 use lowband_crypto::SecureSession;
 use lowband_platform::{PaletteTileDecoder, PaletteTileEncoder, TileCoord, TileGrid, TILE_BYTES, TILE_SIZE_PX};
@@ -27,6 +29,7 @@ const KIND_END: u8 = 0x22;
 
 const ENC_PALETTE: u8 = 0;
 const ENC_RAW: u8 = 1;
+const ENC_DCT: u8 = 2;
 
 /// A screen-transfer frame on the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,11 +111,12 @@ pub fn send_frame(
     for row in 0..grid.rows {
         for col in 0..grid.cols {
             let tile = grid.extract_tile(pixels, stride, TileCoord { col, row });
-            // Prefer the lossless palette coder; fall back to raw BGRA for
-            // tiles that exceed the palette color limit (photographic).
+            // Prefer the lossless palette coder for text/flat tiles; for
+            // photographic tiles (> palette color limit) use the lossy DCT
+            // camera gear, which compresses far below raw BGRA.
             let (encoding, data) = match PaletteTileEncoder::encode(&tile) {
                 Ok(d) => (ENC_PALETTE, d),
-                Err(_) => (ENC_RAW, tile.to_vec()),
+                Err(_) => (ENC_DCT, crate::picture::encode_tile(&tile)),
             };
             session.send(&ScreenFrame::Tile { col, row, encoding, data }.encode())?;
         }
@@ -160,6 +164,9 @@ impl ScreenReceiver {
                             return Err(ScreenError::BadTile);
                         }
                         data
+                    }
+                    ENC_DCT => {
+                        crate::picture::decode_tile(&data).ok_or(ScreenError::BadTile)?.to_vec()
                     }
                     other => return Err(ScreenError::UnknownEncoding(other)),
                 };
@@ -327,11 +334,12 @@ mod tests {
     }
 
     #[test]
-    fn photo_tiles_take_raw_path_and_still_round_trip() {
+    fn photo_tiles_take_dct_path_and_compress() {
         let (w, h) = (64, 32);
         let src = photo_screen(w, h);
         let grid = TileGrid::new(w, h);
-        let mut used_raw = false;
+        let mut dct_tiles = 0usize;
+        let mut dct_bytes = 0usize;
         let mut rx = ScreenReceiver::new();
         rx.apply(ScreenFrame::Begin { width: w, height: h }).unwrap();
         for row in 0..grid.rows {
@@ -340,16 +348,30 @@ mod tests {
                 let (encoding, data) = match PaletteTileEncoder::encode(&tile) {
                     Ok(d) => (ENC_PALETTE, d),
                     Err(_) => {
-                        used_raw = true;
-                        (ENC_RAW, tile.to_vec())
+                        dct_tiles += 1;
+                        let d = crate::picture::encode_tile(&tile);
+                        dct_bytes += d.len();
+                        (ENC_DCT, d)
                     }
                 };
                 rx.apply(ScreenFrame::Tile { col, row, encoding, data }).unwrap();
             }
         }
         let out = rx.apply(ScreenFrame::End).unwrap().unwrap();
-        assert!(used_raw, "gradient must exceed the palette color limit somewhere");
-        assert_eq!(out, src, "raw fallback must also be lossless");
+        assert!(dct_tiles > 0, "gradient must exceed the palette color limit somewhere");
+        // DCT is lossy but high quality: PSNR over the whole frame stays high.
+        let mut mse = 0.0;
+        let mut n = 0.0;
+        for p in 0..(w * h) as usize {
+            for ch in 0..3 {
+                let d = src[p * 4 + ch] as f64 - out[p * 4 + ch] as f64;
+                mse += d * d;
+                n += 1.0;
+            }
+        }
+        let psnr = 10.0 * (255.0f64.powi(2) / (mse / n)).log10();
+        assert!(psnr > 30.0, "photo PSNR too low over the frame: {psnr:.1} dB");
+        assert!(dct_bytes < dct_tiles * TILE_BYTES, "DCT must beat raw ({dct_bytes} vs {})", dct_tiles * TILE_BYTES);
     }
 
     #[test]

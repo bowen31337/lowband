@@ -29,6 +29,7 @@ mod inbound;
 // bench gates.
 #[cfg(test)]
 mod ocr;
+mod picture;
 mod screen_transfer;
 mod session;
 mod stun;
