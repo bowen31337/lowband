@@ -124,6 +124,8 @@ The following eval findings have been implemented with tests (all pushed to
 | CI enforcement "absent" | **wired** | `.github/workflows/ci.yml` runs `cargo test --workspace` on push/PR. |
 | "code entry → session path not in the daemon" | **in daemon** | `core/lowbandd/src/session.rs` `establish_host`/`establish_join` are the daemon's production path; `--signaling`/`--host`/`--join` flags select it; integration test drives both halves over a real server + UDP. |
 | FR-9 clipboard **file** sync (M5) "MISSING" | **metadata + safety done** | `ClipboardFileOffer`/`apply_remote_files` gate a file offer by the clipboard grant, count, aggregate size, and **path-traversal-safe names** (rejects `../`, absolute paths, separators, control chars). Byte transfer reuses the existing `xfer` chunk layer. |
+| FR-10/FR-9/FR-5 "library values, no transport" | **on the wire** | `MessageFrame` (`core/messaging/src/wire.rs`) + the daemon data plane (`core/lowbandd/src/dataplane.rs`) seal chat/clipboard/panic into the `SecureSession` and dispatch each through its subsystem gate. Real-socket test carries chat + clipboard over a live Noise-IK channel. |
+| FR-14 mesh group calls (M5) "MISSING, greenfield" | **rendezvous done** | Multi-party room rendezvous: `POST /signal/room[/join,/candidate]` + `GET /signal/room/:code` with a 4-participant cap (`MESH_MAX_PARTICIPANTS`), member-only candidate publishing, and a client roster API (`RoomRoster::peers`). Integration test: 4 peers form a full roster, 5th rejected. The per-pair media mesh reuses `SecureSession`; codecs still pending. |
 
 **Still open (the dominant blockers):** real codecs
 (libopus/SVT-AV1/dav1d/H.264) and speaker playback — so no media actually
@@ -132,10 +134,12 @@ the daemon (the channel stands up but carries no audio/screen/input yet); an
 ICE agent for real NAT traversal (candidates are exchanged but not gathered
 from STUN); per-monitor capture selection; the neural runtime behind its
 gates; the model-based verification gates replaced with real ViSQOL/OCR/VMAF
-over netem; the NFR-8 CPU gate; and of the two v1.2 (M5) headline features,
-**mesh group calls remain greenfield** (clipboard file sync now has its
-capability-gated metadata handshake, though it still needs wiring to the OS
-clipboard and the `xfer` pull on both ends).
+over netem; the NFR-8 CPU gate. The two v1.2 (M5) headline features now have
+their non-media foundations — clipboard file sync has its capability-gated,
+path-safe metadata handshake, and mesh group calls have their 4-party room
+rendezvous with a client roster API — but both still need the media layer
+(codecs + the per-pair mesh data plane) and OS-clipboard / `xfer`-pull wiring
+to be end-user-complete.
 
 ## Honest summary
 

@@ -49,6 +49,28 @@ pub struct JoinInfo {
     pub candidates: Vec<String>,
 }
 
+/// One member of a mesh room (FR-14).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RoomParticipant {
+    pub id: String,
+    /// Hex-encoded static public key.
+    pub pubkey: String,
+    pub candidates: Vec<String>,
+}
+
+/// The roster of a mesh room from [`SignalingClient::room_roster`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RoomRoster {
+    pub participants: Vec<RoomParticipant>,
+}
+
+impl RoomRoster {
+    /// Every participant except `me` — the peers this node must mesh-connect to.
+    pub fn peers<'a>(&'a self, me: &'a str) -> impl Iterator<Item = &'a RoomParticipant> + 'a {
+        self.participants.iter().filter(move |p| p.id != me)
+    }
+}
+
 /// Errors from a signaling exchange.
 #[derive(Debug)]
 pub enum ClientError {
@@ -183,6 +205,52 @@ impl SignalingClient {
         let body = json_obj(&[("session_code", code)]);
         let (status, _) = self.request("POST", "/signal/connected", Some(&body))?;
         expect(status, 200)
+    }
+
+    // ── Mesh group rooms (FR-14) ──────────────────────────────────────────
+
+    /// Create a mesh room; returns the 9-digit room code.
+    pub fn create_room(&self) -> Result<String> {
+        let (status, body) = self.request("POST", "/signal/room", None)?;
+        expect(status, 201)?;
+        json_string_field(&body, "room_code").ok_or(ClientError::Malformed("missing room_code"))
+    }
+
+    /// Join a room as `participant_id`, publishing this node's static pubkey
+    /// (hex). `Err(Status(409))` means the room is full
+    /// ([`MESH_MAX_PARTICIPANTS`](crate::MESH_MAX_PARTICIPANTS)).
+    pub fn join_room(&self, code: &str, participant_id: &str, pubkey_hex: &str) -> Result<()> {
+        let body = json_obj(&[
+            ("room_code", code),
+            ("participant_id", participant_id),
+            ("pubkey", pubkey_hex),
+        ]);
+        let (status, _) = self.request("POST", "/signal/room/join", Some(&body))?;
+        expect(status, 200)
+    }
+
+    /// Publish one transport candidate for `participant_id` in the room.
+    pub fn post_room_candidate(
+        &self,
+        code: &str,
+        participant_id: &str,
+        candidate: &str,
+    ) -> Result<()> {
+        let body = json_obj(&[
+            ("room_code", code),
+            ("participant_id", participant_id),
+            ("candidate", candidate),
+        ]);
+        let (status, _) = self.request("POST", "/signal/room/candidate", Some(&body))?;
+        expect(status, 202)
+    }
+
+    /// Fetch the room roster — every participant's id, pubkey, and candidates.
+    pub fn room_roster(&self, code: &str) -> Result<RoomRoster> {
+        let path = format!("/signal/room/{code}");
+        let (status, body) = self.request("GET", &path, None)?;
+        expect(status, 200)?;
+        Ok(RoomRoster { participants: parse_participants(&body) })
     }
 
     // ── HTTP/1.1 over a fresh TCP connection ──────────────────────────────
@@ -394,6 +462,64 @@ fn json_string_array_field(body: &str, key: &str) -> Vec<String> {
                     }
                 }
             }
+        }
+    }
+    out
+}
+
+/// Parse the `"participants":[ {…}, {…} ]` array into structured members.
+///
+/// Walks brace depth to slice each top-level object, then reuses the flat
+/// field extractors on each slice (their "first key" behaviour is correct
+/// once scoped to a single object).
+fn parse_participants(body: &str) -> Vec<RoomParticipant> {
+    let Some(arr_at) = field_value_start(body, "participants") else {
+        return Vec::new();
+    };
+    let rest = &body[arr_at..];
+    if !rest.starts_with('[') {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut obj_start = None;
+    let mut in_str = false;
+    let mut escaped = false;
+    for (i, c) in rest.char_indices() {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' => {
+                if depth == 0 {
+                    obj_start = Some(i);
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(s) = obj_start.take() {
+                        let obj = &rest[s..=i];
+                        out.push(RoomParticipant {
+                            id: json_string_field(obj, "id").unwrap_or_default(),
+                            pubkey: json_string_field(obj, "pubkey").unwrap_or_default(),
+                            candidates: json_string_array_field(obj, "candidates"),
+                        });
+                    }
+                }
+            }
+            ']' if depth == 0 => break,
+            _ => {}
         }
     }
     out

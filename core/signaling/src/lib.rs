@@ -5,7 +5,9 @@
 //! the moment the peers connect directly.
 
 pub mod client;
-pub use client::{ClientError, JoinInfo, SignalingClient, TurnCredential};
+pub mod room;
+pub use client::{ClientError, JoinInfo, RoomParticipant, RoomRoster, SignalingClient, TurnCredential};
+pub use room::MESH_MAX_PARTICIPANTS;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -26,6 +28,8 @@ use sha2::Sha256;
 
 const SESSION_TTL: Duration = Duration::from_secs(300);
 const TURN_TTL_SECS: u64 = 86_400;
+/// Mesh room lifetime in seconds (matches the 1:1 session TTL).
+const ROOM_TTL_SECS: i64 = 300;
 
 // ── session_codes store ───────────────────────────────────────────────────────
 //
@@ -39,6 +43,12 @@ pub struct AppState {
     ice_candidates: sled::Tree,
     offers: sled::Tree,
     answers: sled::Tree,
+    // Mesh group rooms (FR-14): `rooms` holds code → expires_at; `room_members`
+    // holds `{code}:{participant_id}` → static pubkey; `room_candidates` holds
+    // `{code}:{participant_id}:{seq}` → candidate.
+    rooms: sled::Tree,
+    room_members: sled::Tree,
+    room_candidates: sled::Tree,
     turn_urls: Arc<Vec<String>>,
     turn_secret: Arc<String>,
 }
@@ -61,6 +71,9 @@ impl AppState {
             ice_candidates: db.open_tree("ice_candidates").expect("open tree"),
             offers: db.open_tree("offers").expect("open tree"),
             answers: db.open_tree("answers").expect("open tree"),
+            rooms: db.open_tree("rooms").expect("open tree"),
+            room_members: db.open_tree("room_members").expect("open tree"),
+            room_candidates: db.open_tree("room_candidates").expect("open tree"),
             turn_urls: Arc::new(vec!["turn:turn.example.com:3478".into()]),
             turn_secret: Arc::new("test-secret".into()),
         }
@@ -74,6 +87,9 @@ impl AppState {
             ice_candidates: db.open_tree("ice_candidates")?,
             offers: db.open_tree("offers")?,
             answers: db.open_tree("answers")?,
+            rooms: db.open_tree("rooms")?,
+            room_members: db.open_tree("room_members")?,
+            room_candidates: db.open_tree("room_candidates")?,
             turn_urls: Arc::new(turn_urls),
             turn_secret: Arc::new(turn_secret),
         })
@@ -136,6 +152,11 @@ fn gen_code() -> String {
     format!("{:09}", CODE_SEQ.fetch_add(1, Ordering::Relaxed) % 1_000_000_000)
 }
 
+/// Monotonic sequence for candidate ordering (shared by 1:1 and mesh).
+fn next_candidate_seq() -> u64 {
+    CAND_SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
 fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -155,6 +176,11 @@ pub fn router(state: AppState) -> Router {
         .route("/signal/candidate", post(post_candidate))
         .route("/signal/turn", post(post_turn))
         .route("/signal/connected", post(post_connected))
+        // Mesh group rendezvous (FR-14).
+        .route("/signal/room", post(room::post_room))
+        .route("/signal/room/join", post(room::post_room_join))
+        .route("/signal/room/candidate", post(room::post_room_candidate))
+        .route("/signal/room/:code", get(room::get_room))
         .with_state(state)
 }
 
