@@ -103,3 +103,34 @@ jobs:
           cargo test -p lowbandd --features onnx
           --target x86_64-unknown-linux-gnu
           --config 'host.rustflags=[]'
+
+  # Builds the real Netflix/libvmaf `vmaf` CLI from source and runs it against
+  # decoded frames — the branded VMAF measurement tool the PRD names (no clean
+  # Rust binding exists, so we drive the actual binary as a subprocess).
+  vmaf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and install the vmaf CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build nasm
+          git clone --depth 1 https://github.com/Netflix/vmaf.git /tmp/vmaf
+          cd /tmp/vmaf/libvmaf
+          meson setup build --buildtype release
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
+          vmaf --version
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: vmaf
+      - name: Run VMAF on decoded frames
+        # VMAF_ASSERT makes the test require a real score rather than skip.
+        env:
+          VMAF_ASSERT: "1"
+        run: >
+          cargo test -p lowbandd vmaf_cli
+          --target x86_64-unknown-linux-gnu
+          --config 'host.rustflags=[]'

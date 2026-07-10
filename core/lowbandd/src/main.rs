@@ -50,6 +50,10 @@ mod picture;
 // Verification-only quality gates (SSIM / segmental SNR); compiled for tests.
 #[cfg(test)]
 mod quality;
+// Real branded VMAF via the vmaf CLI subprocess; verification harness, tests
+// only (the `vmaf` CI job builds the tool; locally it skips).
+#[cfg(test)]
+mod vmaf_cli;
 mod screen_transfer;
 mod session;
 mod stun;
