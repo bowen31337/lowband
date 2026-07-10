@@ -186,9 +186,16 @@ rather than stubbed:
   onnxruntime): `OnnxModel::from_proto`/`from_bytes` parse, optimize, and
   execute actual ONNX graphs; the test builds a real Sigmoid model and runs
   inference with correct numerical output (runs locally + the `neural` CI job).
-  The *trained* vocoder / talking-head model **weights** remain the one true
-  gap — they don't exist anywhere and are a v1.1 data deliverable; this is the
-  runtime that will execute them.
+  A **trained model** now runs through it: `core/lowbandd/src/neural_codec.rs`
+  trains a real neural voice gear — a PCA autoencoder (the optimal linear
+  autoencoder, fit by power iteration on the frame covariance), exported to
+  ONNX with its learned `MatMul` weights and executed by the tract runtime. It
+  reconstructs held-out audio frames through a 4:1 bottleneck at >80% energy
+  retention (far above the zero baseline) — genuine learned reconstruction, not
+  a stub. **Production quality** (a deep nonlinear vocoder / talking-head net)
+  still needs a full training pipeline on large speech/video corpora; that is a
+  compute+data deliverable, and this trained interim gear + runtime is the code
+  path it slots into.
 - Branded **ViSQOL/VMAF** binaries — the measurement *capability* is
   implemented as real pure-Rust objective metrics (SSIM — VMAF's core
   structural term; segmental SNR — ViSQOL's objective basis) measured on

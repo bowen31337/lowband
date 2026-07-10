@@ -43,6 +43,9 @@ mod audio_io;
 // ONNX neural-inference runtime (pure-Rust tract), behind the `onnx` feature.
 #[cfg(feature = "onnx")]
 mod neural;
+// Trained neural voice gear (PCA autoencoder → ONNX → tract runtime).
+#[cfg(feature = "onnx")]
+mod neural_codec;
 mod picture;
 // Verification-only quality gates (SSIM / segmental SNR); compiled for tests.
 #[cfg(test)]
