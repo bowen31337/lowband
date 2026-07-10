@@ -16,14 +16,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
       - name: Workspace tests (unit + bench gates + e2e)
-        # PATH: the repo vendors rust-lld in bin/ for the musl default target.
-        run: |
-          export PATH="$PWD/bin:$PATH"
+        # Build on the gnu target so C deps (zstd-sys) use the runner's native
+        # gcc — the musl default target would need x86_64-linux-musl-gcc, which
+        # isn't installed on the runner. Neutralize the repo's machine-specific
+        # host rustflags (-L/tmp/rust-libs) too.
+        run: >
           cargo test --workspace
+          --target x86_64-unknown-linux-gnu
+          --config 'host.rustflags=[]'
 
   # Builds and tests the PRODUCTION voice codec against real system libopus —
   # the C dependency the local dev environment can't install. This is where
