@@ -87,6 +87,23 @@ jobs:
           --target x86_64-unknown-linux-gnu
           --config 'host.rustflags=[]'
 
+  # GA v1.0 exit criterion: the NFR bench suite gated in CI. The 59 bench
+  # gates encode every PRD quantitative bar (tier, latency, ViSQOL, OCR, idle
+  # economy, loss resilience, …); this runs them as an explicit named gate.
+  nfr-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nfr
+      - name: Run the NFR bench gates
+        run: >
+          cargo test -p lowband-bench
+          --target x86_64-unknown-linux-gnu
+          --config 'host.rustflags=[]'
+
   # Builds and tests the ONNX neural-inference runtime (pure-Rust tract — no
   # C/onnxruntime, so this also runs in the normal dev environment). Verifies
   # the runtime loads and executes a real ONNX graph end to end.
