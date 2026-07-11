@@ -71,20 +71,68 @@ fn yuv420_to_bgra(y: &[u8], u: &[u8], v: &[u8], y_stride: usize, c_stride: usize
     out
 }
 
-/// Encode a 32×32 BGRA tile to an AV1 bitstream (rav1e intra frame).
+/// AV1 camera gear (GA v1.0 / FR-8). Selects the encoder's quality/speed
+/// trade-off, driven by the governor's [`CameraGear`] and tier state:
+/// - `GearB` — the quality gear: lower quantizer + slower preset (sharper,
+///   larger). Used at comfortable/full tiers with CPU headroom.
+/// - `GearC` — the economy gear: higher quantizer + faster preset (smaller,
+///   coarser). Used at constrained tiers / under thermal or CPU pressure.
+///
+/// (`GearA`, the neural talking-head gear, is a separate v1.1 path, not AV1.)
+#[cfg(feature = "av1-encode")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Av1Gear {
+    /// Quality gear (Gear B).
+    B,
+    /// Economy gear (Gear C).
+    C,
+}
+
+#[cfg(feature = "av1-encode")]
+impl Av1Gear {
+    /// (rav1e speed preset, base quantizer). Lower quantizer = higher quality;
+    /// lower speed preset = slower but better.
+    fn params(self) -> (u8, usize) {
+        match self {
+            // Slower preset, low quantizer → sharper, larger.
+            Av1Gear::B => (6, 70),
+            // Fast preset, high quantizer → smaller, coarser.
+            Av1Gear::C => (10, 150),
+        }
+    }
+
+    /// Map a governor [`CameraGear`] to the AV1 quality gear. A `GearB` from the
+    /// governor is the quality gear; `GearC`/anything lower is the economy gear.
+    pub fn from_camera_gear(g: lowband_platform::CameraGear) -> Self {
+        match g {
+            lowband_platform::CameraGear::GearB { .. } => Av1Gear::B,
+            _ => Av1Gear::C,
+        }
+    }
+}
+
+/// Encode a 32×32 BGRA tile to an AV1 bitstream at the default quality gear.
 #[cfg(feature = "av1-encode")]
 pub fn encode_tile(pixels: &[u8]) -> Vec<u8> {
+    encode_tile_gear(pixels, Av1Gear::B)
+}
+
+/// Encode a 32×32 BGRA tile to an AV1 bitstream at the given camera `gear`.
+#[cfg(feature = "av1-encode")]
+pub fn encode_tile_gear(pixels: &[u8], gear: Av1Gear) -> Vec<u8> {
     use rav1e::prelude::*;
 
     assert_eq!(pixels.len(), TILE_BYTES);
     let (y, u, v) = bgra_to_yuv420(pixels);
+    let (preset, quantizer) = gear.params();
 
     let enc = EncoderConfig {
         width: DIM,
         height: DIM,
         bit_depth: 8,
         chroma_sampling: ChromaSampling::Cs420,
-        speed_settings: SpeedSettings::from_preset(10),
+        speed_settings: SpeedSettings::from_preset(preset),
+        quantizer,
         still_picture: true,
         ..Default::default()
     };
@@ -181,6 +229,29 @@ mod tests {
         let enc = encode_tile(&gradient());
         assert!(!enc.is_empty(), "AV1 encoder produced no data");
         assert!(enc.len() < TILE_BYTES, "AV1 must beat raw: {} vs {}", enc.len(), TILE_BYTES);
+    }
+
+    #[cfg(feature = "av1-encode")]
+    #[test]
+    fn economy_gear_c_is_smaller_than_quality_gear_b() {
+        // GA gear system: the economy gear (C) trades quality for size, so its
+        // bitstream must be no larger than the quality gear (B). Both compress
+        // below raw. (rav1e-only; runs without the C decoder.)
+        let tile = gradient();
+        let b = encode_tile_gear(&tile, Av1Gear::B);
+        let c = encode_tile_gear(&tile, Av1Gear::C);
+        assert!(!b.is_empty() && !c.is_empty());
+        assert!(c.len() <= b.len(), "economy gear C ({}) must not exceed quality B ({})", c.len(), b.len());
+        assert!(b.len() < TILE_BYTES && c.len() < TILE_BYTES, "both gears beat raw");
+    }
+
+    #[cfg(feature = "av1-encode")]
+    #[test]
+    fn governor_gear_maps_to_av1_gear() {
+        use lowband_platform::CameraGear;
+        assert_eq!(Av1Gear::from_camera_gear(CameraGear::GearB { svt_preset: 8 }), Av1Gear::B);
+        assert_eq!(Av1Gear::from_camera_gear(CameraGear::GearC), Av1Gear::C);
+        assert_eq!(Av1Gear::from_camera_gear(CameraGear::Off), Av1Gear::C);
     }
 
     #[cfg(feature = "av1")]
