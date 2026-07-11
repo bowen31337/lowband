@@ -74,8 +74,15 @@ bounded set — not the whole roadmap:
   → **All implemented:** lossless screen codec + real OCR gate (pixel-perfect,
   100% ≥ 99.5%), file transfer with resume over E2EE, macOS cross-build (full
   in the release matrix), UC-1 e2e.
-- **GA v1.0 (M3):** AV1 camera gears, Linux, audit export, quality indicator.
-  → AV1 (rav1e/dav1d) **done + CI-green**; ed25519 audit export **done**.
+- **GA v1.0 (M3):** "AV1 camera gears B/C, Linux, audit export, quality
+  indicator, admin deployment (MSI/pkg), external security review. Exit: all
+  P0s, **NFR suite gated in CI**." → **AV1 gears B/C** (quality/economy,
+  governor-mapped) **done**; **Linux** build **done**; **ed25519 audit export**
+  **done**; **FR-11 quality indicator** wired to the governor **done**;
+  **MSI/pkg** packaging + release workflow **done**; **security review** (the
+  internal pass) fixed two allocation-amplification DoS vectors; **NFR suite**
+  is an explicit CI gate (`nfr-suite`, 61 bench-gate binaries). External
+  third-party security review is an organizational activity, not code.
 - **v1.1 (M4):** "**Neural gears** (survival-tier voice codec, AI head video)."
   → The neural gears are a **v1.1 item, two milestones after Beta.** Even so:
   ONNX runtime **done**, PCA gear **done**, backprop training pipeline **done**
