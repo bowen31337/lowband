@@ -95,7 +95,10 @@ impl XferFrame {
                 if count > MAX_FRAGMENTS {
                     return Err(XferError::TooLarge);
                 }
-                let mut frag_hashes = Vec::with_capacity(count);
+                // Cap the pre-allocation to what the remaining bytes can
+                // actually hold (32 B per hash) so a small datagram claiming a
+                // huge count can't force a large speculative allocation (DoS).
+                let mut frag_hashes = Vec::with_capacity(count.min(rest.len() / 32 + 1));
                 for _ in 0..count {
                     frag_hashes.push(take_hash(&mut rest)?);
                 }

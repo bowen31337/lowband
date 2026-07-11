@@ -119,7 +119,10 @@ impl AdpcmDecoder {
 
     /// Decode ADPCM bytes into `sample_count` PCM samples (low nibble first).
     pub fn decode(&mut self, data: &[u8], sample_count: usize) -> Vec<i16> {
-        let mut out = Vec::with_capacity(sample_count);
+        // Cap the pre-allocation to what `data` can actually yield (2 samples
+        // per byte); an untrusted `sample_count` must not force a large
+        // speculative allocation.
+        let mut out = Vec::with_capacity(sample_count.min(data.len() * 2));
         for &byte in data {
             if out.len() < sample_count {
                 out.push(self.decode_code(byte & 0x0F));
