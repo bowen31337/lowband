@@ -25,6 +25,7 @@ mod adpcm;
 mod dataplane;
 mod file_transfer;
 mod inbound;
+mod quality_indicator;
 // Verification-only harness (NFR-4 OCR gate); compiled for tests, like the
 // bench gates.
 #[cfg(test)]
@@ -458,6 +459,10 @@ fn main() {
 
     let tick = Duration::from_millis(100); // 10 Hz
     let mut snap = CpuSnapshot::now();
+    // FR-11 live quality indicator: fed the governor's own per-tick state so it
+    // can never drift from what the governor decided. Logged once a second.
+    let mut quality = quality_indicator::QualityIndicator::new();
+    let mut tick_count: u32 = 0;
 
     eprintln!(
         "lowbandd: governor running (data_dir={}, link_bps={})",
@@ -481,8 +486,18 @@ fn main() {
         let constraints = GearConstraints::from_thermal(thermal);
         let budgets = allocate(cfg.link_bps, &constraints);
 
+        // Update the honest quality indicator from this tick's governor state.
+        let (rtt_ms, loss_pct) = (0, 0.0);
+        quality.update(tier, &budgets, rtt_ms, loss_pct);
+        tick_count += 1;
+        if tick_count % 10 == 0 {
+            if let Some(line) = quality.line() {
+                eprintln!("lowbandd: {line}");
+            }
+        }
+
         server.broadcast(&IpcEvent::TierUpdate { tier, cpu_percent: cpu_pct, thermal });
-        server.broadcast(&IpcEvent::StreamBudget { budgets, rtt_ms: 0, loss_pct: 0.0 });
+        server.broadcast(&IpcEvent::StreamBudget { budgets, rtt_ms, loss_pct });
         server.broadcast(&IpcEvent::GearUpdate { constraints });
 
         // Honour the CPU ceiling: if the daemon is over budget, sleep the
