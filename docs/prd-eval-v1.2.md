@@ -213,7 +213,7 @@ The following eval findings have been implemented with tests (all pushed to
 | "code entry → session path not in the daemon" | **in daemon** | `core/lowbandd/src/session.rs` `establish_host`/`establish_join` are the daemon's production path; `--signaling`/`--host`/`--join` flags select it; integration test drives both halves over a real server + UDP. |
 | FR-9 clipboard **file** sync (M5) "MISSING" | **metadata + safety done** | `ClipboardFileOffer`/`apply_remote_files` gate a file offer by the clipboard grant, count, aggregate size, and **path-traversal-safe names** (rejects `../`, absolute paths, separators, control chars). Byte transfer reuses the existing `xfer` chunk layer. |
 | FR-10/FR-9/FR-5 "library values, no transport" | **on the wire** | `MessageFrame` (`core/messaging/src/wire.rs`) + the daemon data plane (`core/lowbandd/src/dataplane.rs`) seal chat/clipboard/panic into the `SecureSession` and dispatch each through its subsystem gate. Real-socket test carries chat + clipboard over a live Noise-IK channel. |
-| FR-14 mesh group calls (M5) "MISSING, greenfield" | **rendezvous done** | Multi-party room rendezvous: `POST /signal/room[/join,/candidate]` + `GET /signal/room/:code` with a 4-participant cap (`MESH_MAX_PARTICIPANTS`), member-only candidate publishing, and a client roster API (`RoomRoster::peers`). Integration test: 4 peers form a full roster, 5th rejected. The per-pair media mesh reuses `SecureSession`; codecs still pending. |
+| FR-14 mesh group calls (M5) "MISSING, greenfield" | **full mesh fan-out done** | Multi-party room rendezvous: `POST /signal/room[/join,/candidate]` + `GET /signal/room/:code` with a 4-participant cap (`MESH_MAX_PARTICIPANTS`), member-only candidate publishing, and a client roster API (`RoomRoster::peers`). Integration test: 4 peers form a full roster, 5th rejected. **Daemon-side fan-out now integrated** (`core/lowbandd/src/mesh.rs`): each node consumes the roster and establishes a pairwise Noise-IK `SecureSession` to every other participant — deterministic per-pair initiator (lexicographic id), a dedicated socket + peer-tagged candidate per pair, and all handshakes run concurrently (scoped thread per pair) so no node deadlocks in `accept()`. Per-peer uplink budget division (`per_peer_budget`) and conference downlink mixing (`mix`, saturating). `--room`/`--room-join`/`--room-id`/`--room-size` flags select it; under `--features audio` the mesh voice loop (`mesh_voice.rs`) encodes once and fans out, mixing all peers for playout. **Integration test: 4 peers form the full mesh (6 pairwise E2EE channels) over the real signaling server + real UDP and exchange data on every channel.** The 1:1 and 4-party paths are both driven end-to-end through the daemon binaries by `voice-call.sh` (`local`/`mesh` modes). |
 | FR-6 "resume PARTIAL, no end-to-end transfer" | **integrated** | `core/lowbandd/src/file_transfer.rs` sends a real file over the `SecureSession` as datagram-safe fragments with per-fragment + whole-file BLAKE3, reassembles + verifies, and resumes a restarted transfer via `ResumableTransfer`. Test sends a file intact over a live Noise-IK session and resumes a mid-transfer crash. |
 | FR-7 "candidates exchanged but not gathered from STUN" | **STUN gathering** | `core/lowbandd/src/stun.rs` sends an RFC 5389 Binding Request and parses XOR-MAPPED-ADDRESS → the server-reflexive candidate, now published alongside the local one during establishment (`--stun` flag). Tested against a mock STUN server + an establishment run with STUN enabled. |
 | FR-3 / NFR-4 "text screen codec real but never wired to a transmit path" | **screen codec integrated** | `core/lowbandd/src/screen_transfer.rs` splits a frame into 32×32 tiles, encodes each with the existing lossless `PaletteTileEncoder` (raw BGRA fallback for photographic tiles pre-AV1), ships them over the `SecureSession`, and reassembles. Text screens round-trip **pixel-perfect** — strictly stronger than the OCR ≥ 99.5% bar. Routed through the daemon's inbound router alongside chat/file. Tested in-memory, over a real session, and interleaved with chat + file on one channel. |
@@ -280,11 +280,18 @@ rather than stubbed:
   full **ICE connectivity checks + TURN allocate** (STUN reflexive gathering
   is now done; the higher ICE layer is not).
 
-The two v1.2 (M5) headline features have their non-media foundations —
-clipboard file sync (capability-gated, path-safe metadata handshake) and mesh
-group calls (4-party room rendezvous + roster API) — but still need the media
-layer (codecs) and, for mesh, the per-pair session fan-out across the roster
-to be end-user-complete. File transfer (FR-6) and the control channels
+Both v1.2 (M5) headline features are now integrated end-to-end. **Clipboard
+file sync** (capability-gated, path-safe metadata handshake + `xfer` byte
+transfer over the E2EE session). **Mesh group calls ≤ 4** are complete through
+the daemon: the 4-party room rendezvous + roster API feed a daemon-side
+full-mesh fan-out (`mesh.rs`) that stands up a pairwise Noise-IK `SecureSession`
+to every other participant, with per-peer uplink budget division and conference
+downlink mixing; a 4-peer full mesh (6 encrypted channels) is verified over the
+real signaling server + real UDP, and driven through four daemon binaries by
+`voice-call.sh mesh`. Under `--features audio` the mesh voice loop encodes once
+and fans the sealed frame out to all peers, mixing every peer's decoded stream
+for playout (build-verified against ALSA in CI; audible confirmation needs
+hardware on each participant). File transfer (FR-6) and the control channels
 (chat/clipboard/panic, FR-10/9/5) are integrated end-to-end over the E2EE
 session and processed by the daemon today.
 

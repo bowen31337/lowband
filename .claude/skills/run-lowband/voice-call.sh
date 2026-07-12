@@ -17,6 +17,12 @@
 #
 #   voice-call.sh join <code>     join role: enters <code> and connects.
 #
+#   voice-call.sh mesh            local mesh self-test (FR-14): signaling + a
+#                                 host + (MESH_SIZE-1) join daemons on loopback
+#                                 forming a full group call; verifies every
+#                                 daemon reaches "mesh established", then tears
+#                                 down. MESH_SIZE default 3 (max 4).
+#
 # For a real audible call, run `host` on one machine and `join <code>` on the
 # other, both pointing at the same signaling server, and build with AUDIO=1
 # (needs the system audio lib on each machine — libasound2-dev / CoreAudio /
@@ -159,7 +165,71 @@ local)
     wait
   fi
   ;;
+# ── local mesh self-test: a full group call on this box ─────────────────────
+mesh)
+  PORT="${SIGNALING_PORT:-3478}"
+  SIG_ADDR="127.0.0.1:$PORT"
+  BASE="http://$SIG_ADDR"
+  SIZE="${MESH_SIZE:-3}"
+  [ "$SIZE" -ge 2 ] && [ "$SIZE" -le 4 ] || fail "MESH_SIZE must be 2..4 (got $SIZE)"
+  WORK="$(mktemp -d)"
+  PIDS=()
+  cleanup() { [ ${#PIDS[@]} -gt 0 ] && kill "${PIDS[@]}" 2>/dev/null; rm -rf "$WORK"; }
+  trap cleanup EXIT
+
+  echo "── build lowbandd + signaling ${FEATURES[*]:+(features: ${FEATURES[*]})}"
+  cargo build -p lowbandd -p lowband-signaling "${FEATURE_ARGS[@]}"
+
+  echo "── launch signaling on :$PORT"
+  SIGNALING_BIND="127.0.0.1:$PORT" TURN_SHARED_SECRET=voice-demo \
+    SIGNALING_DB="$WORK/signaling-db" \
+    "$BIN/lowband-signaling" >"$WORK/signaling.log" 2>&1 &
+  PIDS+=($!)
+  for _ in $(seq 1 50); do
+    curl -sf -X POST "$BASE/signal/session" -o /dev/null && break
+    sleep 0.1
+  done
+
+  echo "── launch mesh host (creates the room, party size $SIZE)"
+  "$BIN/lowbandd" --ipc-socket "$WORK/p0.sock" --data-dir "$WORK/p0-data" \
+    --signaling "$SIG_ADDR" --room --room-id p0 --room-size "$SIZE" \
+    "${STUN_ARGS[@]}" >"$WORK/p0.log" 2>&1 &
+  PIDS+=($!)
+
+  # Read the room code the host published.
+  CODE=""
+  for _ in $(seq 1 100); do
+    CODE=$(sed -n 's/.*room code: \([0-9]*\).*/\1/p' "$WORK/p0.log" | head -1)
+    [ -n "$CODE" ] && break
+    sleep 0.1
+  done
+  [ -n "$CODE" ] || fail "host never printed a room code ($(cat "$WORK/p0.log"))"
+  echo "   room code = $CODE"
+
+  echo "── launch $((SIZE - 1)) join daemon(s)"
+  for i in $(seq 1 $((SIZE - 1))); do
+    "$BIN/lowbandd" --ipc-socket "$WORK/p$i.sock" --data-dir "$WORK/p$i-data" \
+      --signaling "$SIG_ADDR" --room-join "$CODE" --room-id "p$i" --room-size "$SIZE" \
+      "${STUN_ARGS[@]}" >"$WORK/p$i.log" 2>&1 &
+    PIDS+=($!)
+  done
+
+  # Every one of the SIZE daemons must report the mesh came up.
+  for i in $(seq 0 $((SIZE - 1))); do
+    log="$WORK/p$i.log"
+    ok=0
+    for _ in $(seq 1 400); do
+      grep -q 'mesh established as' "$log" && { ok=1; break; }
+      grep -q 'mesh establishment failed' "$log" && fail "p$i: $(grep 'mesh establishment failed' "$log")"
+      sleep 0.1
+    done
+    [ "$ok" = 1 ] || fail "p$i never established the mesh ($(tail -3 "$log"))"
+    echo "   $(grep 'mesh established as' "$log")"
+  done
+
+  echo "PASS: $SIZE-party full mesh established over signaling + real UDP"
+  ;;
 *)
-  fail "unknown mode '$MODE' (use: local | host | join <code>)"
+  fail "unknown mode '$MODE' (use: local | host | join <code> | mesh)"
   ;;
 esac

@@ -83,7 +83,19 @@ SIGNALING_PORT=3611 .claude/skills/run-lowband/voice-call.sh   # if :3478 taken
 SIGNALING_URL=A.B.C.D:3478 AUDIO=1 .claude/skills/run-lowband/voice-call.sh host
 # On machine B (enters that code):
 SIGNALING_URL=A.B.C.D:3478 AUDIO=1 .claude/skills/run-lowband/voice-call.sh join 123456789
+
+# Mesh group call (FR-14, up to 4). Local self-test — host + join daemons on
+# loopback forming a full mesh, verifies every daemon reaches "mesh established":
+MESH_SIZE=4 .claude/skills/run-lowband/voice-call.sh mesh
+# Across real machines: one host + peers, each with a --room-id, all --room-size N.
+SIGNALING_URL=A.B.C.D:3478 AUDIO=1 voice-call.sh host   # (uses --room under the hood)
 ```
+
+The daemon's mesh flags (also usable directly): `--room` creates a room and
+hosts; `--room-join <code>` joins one; `--room-id <id>` names this participant
+(unique per room); `--room-size <n>` bounds the party (2–4). Each node fans out
+a pairwise Noise-IK `SecureSession` to every other participant (full mesh, no
+media on the server); the uplink budget is split per peer, downlink is mixed.
 
 - `--signaling` is a **`HOST:PORT`**, not an http:// URL — the daemon dials it
   as a socket address (`ToSocketAddrs`). curl-facing routes still use `http://`.

@@ -26,6 +26,9 @@ mod ai_label;
 mod dataplane;
 mod file_transfer;
 mod inbound;
+// Mesh group calls (FR-14): the daemon-side full-mesh fan-out over a signaling
+// room roster; always compiled (establishment + budget + mixer are pure Rust).
+mod mesh;
 mod quality_indicator;
 // Verification-only harness (NFR-4 OCR gate); compiled for tests, like the
 // bench gates.
@@ -45,6 +48,9 @@ mod audio_io;
 // Full-duplex voice loop (mic ↔ speaker over the E2EE session), behind `audio`.
 #[cfg(feature = "audio")]
 mod voice_loop;
+// Full-duplex mesh group voice loop (multi-peer mix), behind `audio`.
+#[cfg(feature = "audio")]
+mod mesh_voice;
 // ONNX neural-inference runtime (pure-Rust tract), behind the `onnx` feature.
 #[cfg(feature = "onnx")]
 mod neural;
@@ -90,6 +96,10 @@ enum SessionMode {
     Host { signaling: String },
     /// Join an existing code (assisted side).
     Join { signaling: String, code: String },
+    /// Create a mesh room and host a group call of up to `size` participants.
+    MeshHost { signaling: String, id: String, size: usize },
+    /// Join an existing mesh room by code.
+    MeshJoin { signaling: String, code: String, id: String, size: usize },
 }
 
 // ── Shutdown flag ─────────────────────────────────────────────────────────────
@@ -131,6 +141,16 @@ struct Config {
     stun_server: Option<std::net::SocketAddr>,
 }
 
+/// Default mesh party size when `--room-size` is omitted (the FR-14 max).
+fn mesh_default_size() -> usize {
+    lowband_signaling::MESH_MAX_PARTICIPANTS
+}
+
+/// A participant id unique to this process when `--room-id` is omitted.
+fn default_participant_id() -> String {
+    format!("peer-{}", std::process::id())
+}
+
 fn parse_args() -> Config {
     let mut ipc_socket = PathBuf::from("/tmp/lowband.sock");
     let mut data_dir = PathBuf::from("/var/lib/lowband");
@@ -141,6 +161,12 @@ fn parse_args() -> Config {
     let mut host = false;
     let mut join_code: Option<String> = None;
     let mut stun_server: Option<std::net::SocketAddr> = None;
+    // Mesh group call (FR-14): `--room` hosts, `--room-join <code>` joins;
+    // `--room-id` names this participant, `--room-size` bounds the party.
+    let mut room_host = false;
+    let mut room_join: Option<String> = None;
+    let mut room_id: Option<String> = None;
+    let mut room_size: usize = mesh_default_size();
 
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -175,13 +201,36 @@ fn parse_args() -> Config {
             "--host" => host = true,
             "--join" => join_code = args.next(),
             "--stun" => stun_server = args.next().and_then(|s| s.parse().ok()),
+            "--room" => room_host = true,
+            "--room-join" => room_join = args.next(),
+            "--room-id" => room_id = args.next(),
+            "--room-size" => {
+                if let Some(v) = args.next() {
+                    if let Ok(n) = v.parse::<usize>() {
+                        room_size = n.clamp(2, lowband_signaling::MESH_MAX_PARTICIPANTS);
+                    }
+                }
+            }
             _ => {}
         }
     }
 
-    let session_mode = match (signaling, host, join_code) {
-        (Some(sig), _, Some(code)) => SessionMode::Join { signaling: sig, code },
-        (Some(sig), true, None) => SessionMode::Host { signaling: sig },
+    // Mesh modes take precedence when a room flag is present; otherwise fall
+    // back to the 1:1 host/join selection (unchanged default when neither set).
+    let session_mode = match (signaling, host, join_code, room_host, room_join) {
+        (Some(sig), _, _, _, Some(code)) => SessionMode::MeshJoin {
+            signaling: sig,
+            code,
+            id: room_id.unwrap_or_else(default_participant_id),
+            size: room_size,
+        },
+        (Some(sig), _, _, true, None) => SessionMode::MeshHost {
+            signaling: sig,
+            id: room_id.unwrap_or_else(default_participant_id),
+            size: room_size,
+        },
+        (Some(sig), _, Some(code), _, _) => SessionMode::Join { signaling: sig, code },
+        (Some(sig), true, None, _, _) => SessionMode::Host { signaling: sig },
         _ => SessionMode::None,
     };
 
@@ -244,6 +293,8 @@ fn establish_peer_session(
         SessionMode::None => return None,
         SessionMode::Host { signaling } => (signaling.clone(), true, None),
         SessionMode::Join { signaling, code } => (signaling.clone(), false, Some(code.clone())),
+        // Mesh modes are established by `establish_mesh_session`, not here.
+        SessionMode::MeshHost { .. } | SessionMode::MeshJoin { .. } => return None,
     };
 
     let host_header = signaling.clone();
@@ -285,6 +336,115 @@ fn establish_peer_session(
             None
         }
     }
+}
+
+/// Establish a mesh group call (FR-14) if a room mode was selected: create or
+/// join the signaling room, then fan out a full mesh of E2EE sessions to every
+/// other participant. Returns this node's [`mesh::MeshSession`] on success.
+fn establish_mesh_session(
+    mode: &SessionMode,
+    stun_server: Option<std::net::SocketAddr>,
+) -> Option<mesh::MeshSession> {
+    use lowband_crypto::StaticKeypair;
+    use lowband_signaling::SignalingClient;
+
+    let _ = stun_server; // reflexive mesh candidates: reuses --stun once ICE lands.
+    let timeout = Duration::from_secs(30);
+
+    let (signaling, is_host, code, id, size) = match mode {
+        SessionMode::MeshHost { signaling, id, size } => {
+            (signaling.clone(), true, None, id.clone(), *size)
+        }
+        SessionMode::MeshJoin { signaling, code, id, size } => {
+            (signaling.clone(), false, Some(code.clone()), id.clone(), *size)
+        }
+        _ => return None,
+    };
+
+    let client = match SignalingClient::connect(&signaling, signaling.clone()) {
+        Ok(c) => c.with_timeout(timeout),
+        Err(e) => {
+            eprintln!("lowbandd: signaling connect failed: {e}");
+            return None;
+        }
+    };
+
+    // The host mints the room code (and reads it to the party); joiners are
+    // handed the code out of band.
+    let code = if is_host {
+        match client.create_room() {
+            Ok(c) => {
+                eprintln!("lowbandd: hosting mesh room (size {size}) — room code: {c}");
+                c
+            }
+            Err(e) => {
+                eprintln!("lowbandd: mesh room creation failed: {e}");
+                return None;
+            }
+        }
+    } else {
+        code.unwrap_or_default()
+    };
+
+    let static_key = StaticKeypair::generate();
+    match mesh::establish_mesh(&client, &code, &id, &static_key, size, timeout) {
+        Ok(m) => {
+            let budget = mesh::per_peer_budget(400_000, m.peers.len());
+            eprintln!(
+                "lowbandd: mesh established as '{}' — {} peer(s), {} bps/peer uplink",
+                m.me,
+                m.peers.len(),
+                budget
+            );
+            for p in &m.peers {
+                let k: String = p.session.remote_static_pubkey().iter().take(4)
+                    .map(|b| format!("{b:02x}")).collect();
+                eprintln!("lowbandd:   peer '{}' (key={k}…)", p.id);
+            }
+            Some(m)
+        }
+        Err(e) => {
+            eprintln!("lowbandd: mesh establishment failed: {e}");
+            None
+        }
+    }
+}
+
+/// Run the inbound router on every mesh peer session — one worker thread per
+/// peer, each dispatching that peer's control/media frames. (The full-duplex
+/// mesh voice mix runs under `--features audio`.)
+#[cfg_attr(feature = "audio", allow(dead_code))]
+fn spawn_mesh_worker(mesh: mesh::MeshSession, data_dir: PathBuf) {
+    use lowband_messaging::clipboard::ClipboardGrant;
+
+    for peer in mesh.peers {
+        let data_dir = data_dir.clone();
+        thread::spawn(move || {
+            let mut session = peer.session;
+            let _ = session.set_read_timeout(Some(Duration::from_secs(1)));
+            // Per-peer inbox so concurrent transfers from different peers don't
+            // collide.
+            let inbox = data_dir.join(format!("inbox-{}.bin", sanitize(&peer.id)));
+            let resume = data_dir.join(format!("inbox-{}.resume", sanitize(&peer.id)));
+            let mut router =
+                inbound::InboundRouter::new(file_transfer::FileReceiver::new(inbox, resume));
+            router.clipboard.set_grant(Some(ClipboardGrant::new()));
+
+            while !SHUTDOWN.load(Ordering::Relaxed) {
+                match router.recv_and_handle(&mut session) {
+                    Ok(handled) => eprintln!("lowbandd: [{}] inbound {handled:?}", peer.id),
+                    Err(file_transfer::XferError::Session(_)) => continue,
+                    Err(e) => eprintln!("lowbandd: [{}] inbound frame error: {e}", peer.id),
+                }
+            }
+        });
+    }
+}
+
+/// Filesystem-safe form of a participant id for per-peer inbox filenames.
+#[cfg_attr(feature = "audio", allow(dead_code))]
+fn sanitize(id: &str) -> String {
+    id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect()
 }
 
 // ── Privilege drop (Linux) ────────────────────────────────────────────────────
@@ -470,6 +630,22 @@ fn main() {
         }
         #[cfg(not(feature = "audio"))]
         spawn_session_worker(session, cfg.data_dir.clone());
+    }
+
+    // Mesh group call (FR-14): establish a full mesh over the room roster and
+    // run a per-peer worker for each pairwise E2EE session.
+    if let Some(mesh) = establish_mesh_session(&cfg.session_mode, cfg.stun_server) {
+        #[cfg(feature = "audio")]
+        {
+            let data_dir = cfg.data_dir.clone();
+            thread::spawn(move || {
+                if let Err(e) = mesh_voice::run(mesh, data_dir) {
+                    eprintln!("lowbandd: mesh voice loop error: {e}");
+                }
+            });
+        }
+        #[cfg(not(feature = "audio"))]
+        spawn_mesh_worker(mesh, cfg.data_dir.clone());
     }
 
     let thermal_mon = ThermalMonitor::new();
