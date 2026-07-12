@@ -92,9 +92,9 @@
               <span class="ml-3 font-mono text-xs text-mist">lowband — session K7F-2QX</span>
             </div>
             <div class="space-y-2.5 p-5 font-mono text-[13px] leading-relaxed">
-              <p class="text-mist">$ lowband assist --join K7F-2QX</p>
-              <p><span class="text-signal">✓</span> peer connected <span class="text-mist">(direct p2p, 0 relays)</span></p>
-              <p><span class="text-signal">✓</span> e2ee established <span class="text-mist">· grants: view + control</span></p>
+              <p class="text-mist">$ lowbandd --signaling relay.example:3478 --join K7F-2QX</p>
+              <p><span class="text-signal">lowbandd:</span> peer connected <span class="text-mist">(direct p2p, 0 relays)</span></p>
+              <p><span class="text-signal">lowbandd:</span> secure channel established <span class="text-mist">· grants: view + control</span></p>
               <p class="text-mist">─────────────────────────────</p>
               <p>
                 link&nbsp;&nbsp;&nbsp;<span id="hero-bw" class="text-white">64</span><span class="text-mist"> kbps</span>
@@ -337,11 +337,12 @@
             </div>
             <div class="code-block" data-code>
               <div class="code-title">both machines</div>
-              <pre><code><span class="c"># same rendezvous + a public STUN server for NAT traversal</span>
-export LOWBAND_SIGNALING=<span class="hl">relay.example:3478</span>
-export LOWBAND_STUN=<span class="hl">stun.l.google.com:19302</span>
+              <pre><code><span class="c"># build the daemon with real mic/speaker support</span>
+$ cargo build -p lowbandd <span class="hl">--features audio</span>
 
-<span class="c"># works down to 64 kbps — a weak 3G uplink is enough</span></code></pre>
+<span class="c"># a rendezvous both ends can reach (HOST:PORT, not a URL)</span>
+<span class="c"># + a public STUN so two NATed networks connect directly</span>
+SIG=<span class="hl">relay.example:3478</span>   STUN=<span class="hl">stun.l.google.com:19302</span></code></pre>
             </div>
           </div>
 
@@ -358,11 +359,9 @@ export LOWBAND_STUN=<span class="hl">stun.l.google.com:19302</span>
             </div>
             <div class="code-block lg:order-1" data-code>
               <div class="code-title">Amara · Lagos</div>
-              <pre><code>$ lowband call --host
-<span class="g">✓</span> mic + camera ready
-<span class="g">✓</span> join code: <span class="hl">R4M-8KP</span>   <span class="c">(share it any way you like)</span>
-
-waiting for people to join…</code></pre>
+              <pre><code>$ lowbandd --signaling <span class="hl">$SIG</span> --stun <span class="hl">$STUN</span> --host
+lowbandd: hosting session — join code: <span class="hl">R4M-8KP</span>
+lowbandd: waiting for peer…   <span class="c">(share the code any way you like)</span></code></pre>
             </div>
           </div>
 
@@ -379,12 +378,11 @@ waiting for people to join…</code></pre>
             </div>
             <div class="code-block" data-code>
               <div class="code-title">Diego · Buenos Aires</div>
-              <pre><code>$ lowband call --join <span class="hl">R4M-8KP</span>
-<span class="g">✓</span> connected to Amara <span class="c">(direct p2p, 0 relays)</span>
-<span class="g">✓</span> e2ee established
+              <pre><code>$ lowbandd --signaling <span class="hl">$SIG</span> --stun <span class="hl">$STUN</span> --join <span class="hl">R4M-8KP</span>
+<span class="g">lowbandd: secure channel established</span> <span class="c">(direct p2p, 0 relays)</span>
 
-voice  opus+dred 16 kbps  <span class="g">● no gaps</span>
-link   72 kbps · rtt 240 ms · tier <span class="hl">CONSTRAINED</span></code></pre>
+<span class="c"># voice: opus+dred 16 kbps · no gaps</span>
+<span class="c"># link:  72 kbps · rtt 240 ms · tier CONSTRAINED</span></code></pre>
             </div>
           </div>
 
@@ -403,19 +401,30 @@ link   72 kbps · rtt 240 ms · tier <span class="hl">CONSTRAINED</span></code><
             <div class="code-block lg:order-1" data-code>
               <div class="code-title">group of four</div>
               <pre><code><span class="c"># host opens a room for up to 4</span>
-$ lowband call --room --size 4
-<span class="g">✓</span> room code: <span class="hl">92C-5TD</span>
+$ lowbandd --signaling <span class="hl">$SIG</span> --stun <span class="hl">$STUN</span> \
+    --room --room-id amara --room-size 4
+lowbandd: hosting mesh room (size 4) — room code: <span class="hl">92C-5TD</span>
 
-<span class="c"># everyone else joins the same code</span>
-$ lowband call --join <span class="hl">92C-5TD</span>
-<span class="g">✓</span> mesh: 3 peers · direct p2p to each
-<span class="g">✓</span> uplink split 3 ways · voices mixed locally</code></pre>
+<span class="c"># everyone else joins with their own id</span>
+$ lowbandd --signaling <span class="hl">$SIG</span> --stun <span class="hl">$STUN</span> \
+    --room-join <span class="hl">92C-5TD</span> --room-id diego --room-size 4
+<span class="g">lowbandd: mesh established as 'diego' — 3 peer(s)</span>, 133333 bps/peer</code></pre>
             </div>
           </div>
         </div>
 
+        <p class="mt-12 max-w-2xl text-sm text-mist leading-relaxed">
+          Prefer a single command? The <span class="font-mono text-fog">voice-call.sh</span> helper wraps
+          all of this — <span class="font-mono text-fog">voice-call.sh host</span>,
+          <span class="font-mono text-fog">join &lt;code&gt;</span>, or
+          <span class="font-mono text-fog">mesh</span> — with
+          <span class="font-mono text-fog">SIGNALING_URL</span>,
+          <span class="font-mono text-fog">STUN</span>, and
+          <span class="font-mono text-fog">AUDIO=1</span> as environment knobs.
+        </p>
+
         <!-- Why it stays low-latency -->
-        <div class="mt-20 grid gap-6 sm:grid-cols-3">
+        <div class="mt-16 grid gap-6 sm:grid-cols-3">
           <div class="feature-card" data-reveal>
             <div class="feature-icon">🛰</div>
             <h3>The short path wins</h3>
@@ -469,8 +478,8 @@ curl -fsSL https://get.lowband.dev | sh
 <span class="c"># Windows (silent deploy)</span>
 msiexec /i lowband.msi /qn
 
-<span class="c"># or from source</span>
-cargo install lowbandd</code></pre>
+<span class="c"># or from source (with mic/speaker support)</span>
+cargo build -p lowbandd --features audio</code></pre>
             </div>
           </div>
 
@@ -487,11 +496,9 @@ cargo install lowbandd</code></pre>
             </div>
             <div class="code-block lg:order-1" data-code>
               <div class="code-title">technician</div>
-              <pre><code>$ lowband assist --new
-<span class="g">✓</span> session ready
-<span class="g">✓</span> join code: <span class="hl">K7F-2QX</span>   <span class="c">(expires in 10 min)</span>
-
-waiting for peer…</code></pre>
+              <pre><code>$ lowbandd --signaling relay.example:3478 --host
+lowbandd: hosting session — join code: <span class="hl">K7F-2QX</span>
+lowbandd: waiting for peer…</code></pre>
             </div>
           </div>
 
@@ -509,7 +516,7 @@ waiting for peer…</code></pre>
             </div>
             <div class="code-block" data-code>
               <div class="code-title">assisted user</div>
-              <pre><code>$ lowband join K7F-2QX
+              <pre><code>$ lowbandd --signaling relay.example:3478 --join K7F-2QX
 
   Tan (Acme IT) is asking to:
   <span class="g">[✓]</span> view your screen
@@ -589,7 +596,7 @@ $ lowband audit export --session K7F-2QX
           <a href="#" class="cta-btn rounded-md border border-white/15 px-6 py-3 font-semibold text-fog transition hover:border-white/40">View the source</a>
         </div>
         <p class="mt-8 font-mono text-xs text-mist/60">
-          $ cargo install lowbandd &nbsp;·&nbsp; works where 64 kbps is a good day
+          $ cargo build -p lowbandd --features audio &nbsp;·&nbsp; works where 64 kbps is a good day
         </p>
       </div>
     </section>
