@@ -351,16 +351,16 @@ fn build_onnx(p: &Params, d: Dims) -> ModelProto {
 
 // ── Split encoder / decoder ONNX (for the neural voice codec) ───────────────
 
-fn onnx_dim(v: i64) -> tensor_shape_proto::Dimension {
+pub(crate) fn onnx_dim(v: i64) -> tensor_shape_proto::Dimension {
     tensor_shape_proto::Dimension {
         value: Some(tensor_shape_proto::dimension::Value::DimValue(v)),
         ..Default::default()
     }
 }
-fn onnx_tensor(name: &str, dims: &[i64], data: &[f32]) -> TensorProto {
+pub(crate) fn onnx_tensor(name: &str, dims: &[i64], data: &[f32]) -> TensorProto {
     TensorProto { dims: dims.to_vec(), data_type: 1, float_data: data.to_vec(), name: name.into(), ..Default::default() }
 }
-fn onnx_io(name: &str, len: i64) -> ValueInfoProto {
+pub(crate) fn onnx_io(name: &str, len: i64) -> ValueInfoProto {
     ValueInfoProto {
         name: name.into(),
         r#type: Some(TypeProto {
@@ -373,13 +373,13 @@ fn onnx_io(name: &str, len: i64) -> ValueInfoProto {
         ..Default::default()
     }
 }
-fn onnx_gemm(a: &str, w: &str, b: &str, out: &str) -> NodeProto {
+pub(crate) fn onnx_gemm(a: &str, w: &str, b: &str, out: &str) -> NodeProto {
     NodeProto { input: vec![a.into(), w.into(), b.into()], output: vec![out.into()], op_type: "Gemm".into(), ..Default::default() }
 }
-fn onnx_relu(a: &str, out: &str) -> NodeProto {
+pub(crate) fn onnx_relu(a: &str, out: &str) -> NodeProto {
     NodeProto { input: vec![a.into()], output: vec![out.into()], op_type: "Relu".into(), ..Default::default() }
 }
-fn onnx_model(graph: GraphProto) -> ModelProto {
+pub(crate) fn onnx_model(graph: GraphProto) -> ModelProto {
     ModelProto {
         ir_version: 8,
         opset_import: vec![OperatorSetIdProto { domain: String::new(), version: 13 }],

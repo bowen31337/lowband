@@ -51,6 +51,9 @@ mod neural_codec;
 // Neural training pipeline: backprop-trained nonlinear MLP autoencoder.
 #[cfg(feature = "onnx")]
 mod neural_train;
+// AI head-video gear: keypoints → neural synthesis → AI-labeled frame.
+#[cfg(feature = "onnx")]
+mod neural_head;
 mod picture;
 // Verification-only quality gates (SSIM / segmental SNR); compiled for tests.
 #[cfg(test)]
