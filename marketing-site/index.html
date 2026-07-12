@@ -29,6 +29,7 @@
           <a href="#why" class="transition hover:text-white">Why</a>
           <a href="#features" class="transition hover:text-white">Features</a>
           <a href="#tiers" class="transition hover:text-white">Tiers</a>
+          <a href="#call" class="transition hover:text-white">Call</a>
           <a href="#tutorial" class="transition hover:text-white">Tutorial</a>
           <a href="#security" class="transition hover:text-white">Security</a>
         </div>
@@ -302,6 +303,142 @@
             </div>
             <div class="tier-track"><div class="tier-fill bg-gradient-to-r from-rose-500 to-rose-400"></div></div>
             <p class="tier-desc">Voice floor + coarse text deltas + control. Refinements pause; the session holds.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Call anyone, anywhere ===== -->
+    <section id="call" class="border-t border-white/5 py-28">
+      <div class="mx-auto max-w-6xl px-6">
+        <p class="section-kicker">Not just support — calls</p>
+        <h2 class="section-title max-w-2xl">Talk face to face across the world — even on 3G.</h2>
+        <p class="mt-5 max-w-2xl text-mist leading-relaxed">
+          The same engine that survives a support session is a full-duplex
+          <span class="text-white">voice and video call</span>, one-to-one or a group of up to four.
+          There's no cloud media server in the middle: your audio and video go
+          <span class="text-white">straight peer-to-peer</span> over the shortest network path. That direct
+          hop — not a round trip through a data center on another continent — is what keeps latency low when
+          both of you are on mobile data or ADSL2, half a planet apart.
+        </p>
+
+        <div class="mt-16 space-y-20">
+          <!-- Call step 1 -->
+          <div class="tutorial-step grid items-center gap-10 lg:grid-cols-2" data-step>
+            <div>
+              <div class="step-badge">01</div>
+              <h3 class="step-title">Point both sides at a rendezvous</h3>
+              <p class="step-body">
+                A tiny signaling server — yours, or a shared community one — introduces the two ends and then
+                steps out of the path. It only swaps connection details; it never sees a byte of your call.
+                Add a STUN server and LowBand punches through home routers and carrier NAT, so two phones on
+                opposite sides of the world connect <span class="text-white">directly</span>, no relay.
+              </p>
+            </div>
+            <div class="code-block" data-code>
+              <div class="code-title">both machines</div>
+              <pre><code><span class="c"># same rendezvous + a public STUN server for NAT traversal</span>
+export LOWBAND_SIGNALING=<span class="hl">relay.example:3478</span>
+export LOWBAND_STUN=<span class="hl">stun.l.google.com:19302</span>
+
+<span class="c"># works down to 64 kbps — a weak 3G uplink is enough</span></code></pre>
+            </div>
+          </div>
+
+          <!-- Call step 2 -->
+          <div class="tutorial-step grid items-center gap-10 lg:grid-cols-2" data-step>
+            <div class="lg:order-2">
+              <div class="step-badge">02</div>
+              <h3 class="step-title">One person hosts and shares a code</h3>
+              <p class="step-body">
+                Whoever starts the call gets a short code to pass along — text it, say it, put it in a calendar
+                invite. The handshake is Noise-IK end-to-end encrypted and bound to that code, so only the person
+                you gave it to can join.
+              </p>
+            </div>
+            <div class="code-block lg:order-1" data-code>
+              <div class="code-title">Amara · Lagos</div>
+              <pre><code>$ lowband call --host
+<span class="g">✓</span> mic + camera ready
+<span class="g">✓</span> join code: <span class="hl">R4M-8KP</span>   <span class="c">(share it any way you like)</span>
+
+waiting for people to join…</code></pre>
+            </div>
+          </div>
+
+          <!-- Call step 3 -->
+          <div class="tutorial-step grid items-center gap-10 lg:grid-cols-2" data-step>
+            <div>
+              <div class="step-badge">03</div>
+              <h3 class="step-title">The others join — direct, encrypted, live</h3>
+              <p class="step-body">
+                Enter the code and you're connected peer-to-peer. Voice is Opus with DRED, so a one-second burst
+                of packet loss on a moving train stays inaudible; on a truly bad link the governor sheds video
+                and camera first and holds the voice floor. The call degrades — it doesn't drop.
+              </p>
+            </div>
+            <div class="code-block" data-code>
+              <div class="code-title">Diego · Buenos Aires</div>
+              <pre><code>$ lowband call --join <span class="hl">R4M-8KP</span>
+<span class="g">✓</span> connected to Amara <span class="c">(direct p2p, 0 relays)</span>
+<span class="g">✓</span> e2ee established
+
+voice  opus+dred 16 kbps  <span class="g">● no gaps</span>
+link   72 kbps · rtt 240 ms · tier <span class="hl">CONSTRAINED</span></code></pre>
+            </div>
+          </div>
+
+          <!-- Call step 4 -->
+          <div class="tutorial-step grid items-center gap-10 lg:grid-cols-2" data-step>
+            <div class="lg:order-2">
+              <div class="step-badge">04</div>
+              <h3 class="step-title">Make it a group — up to four</h3>
+              <p class="step-body">
+                Host a room instead and everyone joins the same code. LowBand builds a full mesh — every person
+                connects directly to every other, so no one's audio detours through a central server. The uplink
+                budget is split evenly across the call, and incoming voices are mixed locally. Four people, four
+                corners of the world, one conversation.
+              </p>
+            </div>
+            <div class="code-block lg:order-1" data-code>
+              <div class="code-title">group of four</div>
+              <pre><code><span class="c"># host opens a room for up to 4</span>
+$ lowband call --room --size 4
+<span class="g">✓</span> room code: <span class="hl">92C-5TD</span>
+
+<span class="c"># everyone else joins the same code</span>
+$ lowband call --join <span class="hl">92C-5TD</span>
+<span class="g">✓</span> mesh: 3 peers · direct p2p to each
+<span class="g">✓</span> uplink split 3 ways · voices mixed locally</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Why it stays low-latency -->
+        <div class="mt-20 grid gap-6 sm:grid-cols-3">
+          <div class="feature-card" data-reveal>
+            <div class="feature-icon">🛰</div>
+            <h3>The short path wins</h3>
+            <p>
+              Media never rides through a cloud region. The packets take the most direct route the two networks
+              share — the single biggest lever on real-world latency between distant callers.
+            </p>
+          </div>
+          <div class="feature-card" data-reveal>
+            <div class="feature-icon">🎚</div>
+            <h3>Audio always goes first</h3>
+            <p>
+              The 10 Hz governor budgets voice ahead of everything else with a 6 kbps floor, so conversation
+              stays snappy and intelligible even as a 3G or ADSL2 link wobbles.
+            </p>
+          </div>
+          <div class="feature-card" data-reveal>
+            <div class="feature-icon">🧩</div>
+            <h3>Loss doesn't mean gaps</h3>
+            <p>
+              Opus DRED reconstructs speech through bursts of up to a second of loss, and DTX drops silence to
+              ≈ 0 kbps — so a shaky uplink sounds smooth and costs almost nothing when no one's talking.
+            </p>
           </div>
         </div>
       </div>
