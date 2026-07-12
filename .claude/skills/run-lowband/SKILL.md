@@ -64,11 +64,45 @@ cargo build --manifest-path .claude/skills/run-lowband/shell-probe/Cargo.toml
 
 Both binaries stop cleanly on SIGTERM (`kill %1 %2`).
 
+## Voice call between two peers
+
+`voice-call.sh` turns "establish a session between two peers" into a one
+command. It drives the daemon's real join-code → E2EE channel path (host =
+Noise initiator, join = responder), and with `AUDIO=1` runs the full-duplex
+mic↔speaker voice loop over that channel.
+
+```bash
+# Local self-test (this box): signaling + host daemon + join daemon on
+# loopback; verifies BOTH reach "secure channel established", then tears down.
+# No audio hardware needed — proves the join-code → channel path end to end.
+.claude/skills/run-lowband/voice-call.sh
+SIGNALING_PORT=3611 .claude/skills/run-lowband/voice-call.sh   # if :3478 taken
+
+# Real call across two machines, pointing at one shared signaling server.
+# On machine A (prints a join code, then holds the call):
+SIGNALING_URL=A.B.C.D:3478 AUDIO=1 .claude/skills/run-lowband/voice-call.sh host
+# On machine B (enters that code):
+SIGNALING_URL=A.B.C.D:3478 AUDIO=1 .claude/skills/run-lowband/voice-call.sh join 123456789
+```
+
+- `--signaling` is a **`HOST:PORT`**, not an http:// URL — the daemon dials it
+  as a socket address (`ToSocketAddrs`). curl-facing routes still use `http://`.
+- `AUDIO=1` builds/runs `--features audio` (needs the system audio lib +
+  real mic/speaker on each machine); `OPUS=1` adds the production codec.
+  Without `AUDIO`, the channel establishes but runs the receive-only worker,
+  not the voice loop.
+- `STUN=host:port` publishes a reflexive candidate — needed between two real
+  machines not on the same host (the bare local candidate is `0.0.0.0:port`,
+  only routable over loopback).
+- `KEEP=1` (local mode) leaves both daemons running after the channel is up.
+
 ## Test
 
 ```bash
 cargo test --workspace          # 2700 pass, 0 fail (verified 2026-07-10)
 cargo test -p lowband-e2e       # just the e2e suite: signaling + uc1–uc3, 22 tests
+# the two-peer voice path itself (real UDP + E2EE, no hardware):
+cargo test -p lowbandd --bin lowbandd voice::   # incl. full_duplex_resampled_call_between_two_peers
 ```
 
 ## Gotchas
