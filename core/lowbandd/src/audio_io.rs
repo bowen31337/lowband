@@ -147,9 +147,10 @@ pub const VOICE_SAMPLE_RATE: u32 = 8000;
 
 #[cfg(feature = "audio")]
 fn voice_config() -> cpal::StreamConfig {
+    // cpal 0.18: SampleRate is a `u32` type alias, not a tuple struct.
     cpal::StreamConfig {
         channels: 1,
-        sample_rate: cpal::SampleRate(VOICE_SAMPLE_RATE),
+        sample_rate: VOICE_SAMPLE_RATE,
         buffer_size: cpal::BufferSize::Default,
     }
 }
