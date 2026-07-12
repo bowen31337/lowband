@@ -83,11 +83,17 @@ bounded set — not the whole roadmap:
   internal pass) fixed two allocation-amplification DoS vectors; **NFR suite**
   is an explicit CI gate (`nfr-suite`, 61 bench-gate binaries). External
   third-party security review is an organizational activity, not code.
-- **v1.1 (M4):** "**Neural gears** (survival-tier voice codec, AI head video)."
-  → The neural gears are a **v1.1 item, two milestones after Beta.** Even so:
-  ONNX runtime **done**, PCA gear **done**, backprop training pipeline **done**
-  — only *production-scale trained weights* (a GPU+corpora training run)
-  remain, which are a compute/data deliverable, not code.
+- **v1.1 (M4):** "**Neural gears** (survival-tier voice codec, AI head video
+  with labeling), assisted-side **mobile viewer**." → **All implemented:**
+  ONNX runtime + backprop training pipeline **done**; **survival-tier neural
+  voice codec** (`NeuralVoiceCodec` — split encoder/decoder, k-byte bottleneck
+  on the wire) **done**; **AI head-video gear** (`NeuralHeadGear` —
+  keypoints→neural synthesis) **done**, and **AI-media labeling** enforced
+  (`ai_label`: neural output is always `AI-reconstructed`-labeled, FR-8/NFR-6);
+  **mobile viewer** (Android + iOS apps + `mobile-preflight` CI) **done**. The
+  only remaining piece is *production-scale trained weights* (GPU+corpora
+  training), a compute/data deliverable, not code — the gears + runtime execute
+  them once trained.
 - **v1.2 (M5):** Mesh group calls ≤ 4; clipboard files. → both **done**.
 
 So the Beta (M2) milestone as the PRD defines it is complete, and the work
