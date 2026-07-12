@@ -22,6 +22,36 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+/// The voice codec's sample rate. Device streams open at the hardware's native
+/// rate and are resampled to/from this for the codec, so any device works.
+pub const VOICE_SAMPLE_RATE: u32 = 8000;
+
+/// Linear-interpolation resampler (mono i16) between two sample rates.
+///
+/// Bridges the device's native rate and the codec's 8 kHz so hardware that
+/// doesn't offer 8 kHz directly still works: capture is resampled device→8 k,
+/// playout is resampled 8 k→device. Linear interpolation is cheap and adequate
+/// for narrowband voice.
+pub fn resample(input: &[i16], from_hz: u32, to_hz: u32) -> Vec<i16> {
+    if input.is_empty() || from_hz == 0 || to_hz == 0 || from_hz == to_hz {
+        return input.to_vec();
+    }
+    let out_len = ((input.len() as u64 * to_hz as u64) / from_hz as u64).max(1) as usize;
+    let mut out = Vec::with_capacity(out_len);
+    // Map output index → source position so the endpoints line up.
+    let last = input.len() - 1;
+    let step = if out_len > 1 { last as f64 / (out_len - 1) as f64 } else { 0.0 };
+    for i in 0..out_len {
+        let src = i as f64 * step;
+        let idx = src.floor() as usize;
+        let frac = src - idx as f64;
+        let a = input[idx.min(last)] as f64;
+        let b = input[(idx + 1).min(last)] as f64;
+        out.push((a + (b - a) * frac).round().clamp(i16::MIN as f64, i16::MAX as f64) as i16);
+    }
+    out
+}
+
 /// Convert an i16 PCM sample to normalized f32 (cpal's common format).
 pub fn i16_to_f32(s: i16) -> f32 {
     s as f32 / 32768.0
@@ -112,24 +142,33 @@ impl Speaker {
     /// Open the default output device and start playing samples pulled from
     /// `pcm`. Returns [`AudioError::NoDevice`] when the host has no output.
     ///
-    /// Opens a mono 8 kHz stream to match the voice codec — the telephony rate
-    /// most audio hardware supports, so no resampling is needed. (A device that
-    /// rejects 8 kHz returns [`AudioError::Backend`]; a resampling layer for
-    /// those is the follow-up.)
-    pub fn open(pcm: SharedPcm) -> Result<Self, AudioError> {
+    /// Open the default output device at its **native** rate and return the
+    /// stream plus that sample rate (so the caller resamples the codec's 8 kHz
+    /// up to it). Works on any device, including 48-kHz-only hardware. The
+    /// queue holds mono samples at the device rate; the callback replicates
+    /// each across the device's channels.
+    pub fn open(pcm: SharedPcm) -> Result<(Self, u32), AudioError> {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
         let host = cpal::default_host();
         let device = host.default_output_device().ok_or(AudioError::NoDevice)?;
+        let supported =
+            device.default_output_config().map_err(|e| AudioError::Backend(e.to_string()))?;
+        let rate = supported.sample_rate();
+        let channels = supported.channels() as usize;
+        let config = supported.config();
+
         let stream = device
             .build_output_stream(
-                voice_config(),
+                config,
                 move |data: &mut [f32], _| {
-                    // Mono: one sample per frame. Pull from the playout queue.
-                    let mut mono = vec![0i16; data.len()];
+                    let frames = data.len() / channels.max(1);
+                    let mut mono = vec![0i16; frames];
                     pcm.pop_into(&mut mono);
-                    for (out, &s) in data.iter_mut().zip(mono.iter()) {
-                        *out = i16_to_f32(s);
+                    for (frame, &s) in data.chunks_mut(channels.max(1)).zip(mono.iter()) {
+                        for ch in frame.iter_mut() {
+                            *ch = i16_to_f32(s);
+                        }
                     }
                 },
                 |err| eprintln!("lowbandd: speaker stream error: {err}"),
@@ -137,21 +176,7 @@ impl Speaker {
             )
             .map_err(|e| AudioError::Backend(e.to_string()))?;
         stream.play().map_err(|e| AudioError::Backend(e.to_string()))?;
-        Ok(Self { _stream: stream })
-    }
-}
-
-/// The voice stream config: mono, 8 kHz — matched to the codec.
-#[cfg(feature = "audio")]
-pub const VOICE_SAMPLE_RATE: u32 = 8000;
-
-#[cfg(feature = "audio")]
-fn voice_config() -> cpal::StreamConfig {
-    // cpal 0.18: SampleRate is a `u32` type alias, not a tuple struct.
-    cpal::StreamConfig {
-        channels: 1,
-        sample_rate: VOICE_SAMPLE_RATE,
-        buffer_size: cpal::BufferSize::Default,
+        Ok((Self { _stream: stream }, rate))
     }
 }
 
@@ -164,18 +189,31 @@ pub struct Microphone {
 
 #[cfg(feature = "audio")]
 impl Microphone {
-    /// Opens a mono 8 kHz input stream matched to the voice codec.
-    pub fn open(pcm: SharedPcm) -> Result<Self, AudioError> {
+    /// Open the default input device at its **native** rate and return the
+    /// stream plus that sample rate (so the caller resamples down to the
+    /// codec's 8 kHz). Downmixes the device's channels to mono i16.
+    pub fn open(pcm: SharedPcm) -> Result<(Self, u32), AudioError> {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
         let host = cpal::default_host();
         let device = host.default_input_device().ok_or(AudioError::NoDevice)?;
+        let supported =
+            device.default_input_config().map_err(|e| AudioError::Backend(e.to_string()))?;
+        let rate = supported.sample_rate();
+        let channels = supported.channels() as usize;
+        let config = supported.config();
+
         let stream = device
             .build_input_stream(
-                voice_config(),
+                config,
                 move |data: &[f32], _| {
-                    // Mono 8 kHz: one sample per frame → i16 into the queue.
-                    let mono: Vec<i16> = data.iter().map(|&s| f32_to_i16(s)).collect();
+                    let mono: Vec<i16> = data
+                        .chunks(channels.max(1))
+                        .map(|frame| {
+                            let avg = frame.iter().copied().sum::<f32>() / channels.max(1) as f32;
+                            f32_to_i16(avg)
+                        })
+                        .collect();
                     pcm.push(&mono);
                 },
                 |err| eprintln!("lowbandd: microphone stream error: {err}"),
@@ -183,13 +221,46 @@ impl Microphone {
             )
             .map_err(|e| AudioError::Backend(e.to_string()))?;
         stream.play().map_err(|e| AudioError::Backend(e.to_string()))?;
-        Ok(Self { _stream: stream })
+        Ok((Self { _stream: stream }, rate))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resampler_scales_length_and_preserves_endpoints() {
+        // Downsample 48 kHz → 8 kHz: 6:1 length reduction.
+        let input: Vec<i16> = (0..48).map(|i| (i * 100) as i16).collect();
+        let down = resample(&input, 48_000, 8_000);
+        assert_eq!(down.len(), 8);
+        assert_eq!(down[0], input[0], "endpoint preserved");
+
+        // Upsample 8 kHz → 48 kHz: 6× length.
+        let up = resample(&down, 8_000, 48_000);
+        assert_eq!(up.len(), 48);
+
+        // Equal rates / empty are pass-through.
+        assert_eq!(resample(&input, 8_000, 8_000), input);
+        assert!(resample(&[], 48_000, 8_000).is_empty());
+    }
+
+    #[test]
+    fn resampler_roundtrip_preserves_a_tone_shape() {
+        // A 300 Hz tone at 48 kHz, down to 8 kHz and back, keeps its energy.
+        let n = 480;
+        let tone: Vec<i16> = (0..n)
+            .map(|i| {
+                (8000.0 * (2.0 * std::f64::consts::PI * 300.0 * i as f64 / 48000.0).sin()) as i16
+            })
+            .collect();
+        let back = resample(&resample(&tone, 48_000, 8_000), 8_000, 48_000);
+        let e_in: f64 = tone.iter().map(|&s| (s as f64).powi(2)).sum();
+        let e_out: f64 = back.iter().map(|&s| (s as f64).powi(2)).sum();
+        let ratio = e_out / e_in.max(1.0);
+        assert!((0.5..2.0).contains(&ratio), "resample energy ratio off: {ratio:.2}");
+    }
 
     #[test]
     fn sample_conversion_roundtrips() {
@@ -224,6 +295,7 @@ mod tests {
         let pcm = SharedPcm::new();
         pcm.push(&vec![0i16; 8000]);
         // Any Ok/Err outcome is acceptable; we only require it not to panic.
+        // Ok now yields (stream, native_sample_rate).
         let _ = Speaker::open(pcm);
     }
 }
