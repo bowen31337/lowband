@@ -14,6 +14,7 @@
 //! the code that produces a trained model; scaling it up is a training run,
 //! not more code.
 
+#![allow(dead_code)] // neural-gear API: used by tests + the voice-loop wiring
 use tract_onnx::pb::*;
 
 use crate::neural::OnnxModel;
@@ -170,6 +171,26 @@ impl Params {
     }
 }
 
+/// Run the backprop + SGD training loop, returning the learned params and the
+/// (first, last)-epoch mean loss.
+fn train_params(frames: &[Vec<f32>], d: Dims, epochs: usize, lr: f32) -> (Params, f32, f32) {
+    let mut p = Params::init(d);
+    let mut first = 0.0;
+    let mut last = 0.0;
+    for e in 0..epochs {
+        let mut sum = 0.0;
+        for f in frames {
+            sum += p.train_step(f, d, lr);
+        }
+        let mean = sum / frames.len() as f32;
+        if e == 0 {
+            first = mean;
+        }
+        last = mean;
+    }
+    (p, first, last)
+}
+
 impl TrainedAutoencoder {
     /// Train on `frames` for `epochs` passes at learning rate `lr`, returning
     /// the trained gear and the (first, last)-epoch mean loss so callers can
@@ -180,26 +201,73 @@ impl TrainedAutoencoder {
         epochs: usize,
         lr: f32,
     ) -> tract_onnx::prelude::TractResult<(Self, f32, f32)> {
-        let mut p = Params::init(d);
-        let mut first = 0.0;
-        let mut last = 0.0;
-        for e in 0..epochs {
-            let mut sum = 0.0;
-            for f in frames {
-                sum += p.train_step(f, d, lr);
-            }
-            let mean = sum / frames.len() as f32;
-            if e == 0 {
-                first = mean;
-            }
-            last = mean;
-        }
+        let (p, first, last) = train_params(frames, d, epochs, lr);
         let proto = build_onnx(&p, d);
         Ok((Self { model: OnnxModel::from_proto(&proto)?, n: d.n }, first, last))
     }
 
     pub fn reconstruct(&self, frame: &[f32]) -> tract_onnx::prelude::TractResult<Vec<f32>> {
         self.model.run_f32(frame, &[1, self.n])
+    }
+}
+
+/// A survival-tier **neural voice codec** (FR-8 neural gear, v1.1): the trained
+/// autoencoder split into an encoder (frame → compressed `k`-dim bottleneck)
+/// and a decoder (bottleneck → frame), so only the bottleneck — quantized to
+/// one byte per coefficient — travels on the wire. For an `n`-sample frame that
+/// is `k` bytes vs. `2n` bytes of PCM: extreme compression for the survival
+/// tier. Media reconstructed by this gear is **AI-reconstructed** and MUST be
+/// labeled as such (see [`crate::ai_label`]).
+pub struct NeuralVoiceCodec {
+    encoder: OnnxModel,
+    decoder: OnnxModel,
+    n: usize,
+    k: usize,
+    /// Quantization scale for the bottleneck (i8 range).
+    scale: f32,
+}
+
+impl NeuralVoiceCodec {
+    /// Train the codec on `frames` and compile split encoder/decoder models.
+    pub fn train(
+        frames: &[Vec<f32>],
+        d: Dims,
+        epochs: usize,
+        lr: f32,
+    ) -> tract_onnx::prelude::TractResult<Self> {
+        let (p, _, _) = train_params(frames, d, epochs, lr);
+        let encoder = OnnxModel::from_proto(&build_encoder(&p, d))?;
+        let decoder = OnnxModel::from_proto(&build_decoder(&p, d))?;
+        Ok(Self { encoder, decoder, n: d.n, k: d.k, scale: 16.0 })
+    }
+
+    /// Compressed wire size in bytes for one frame (the bottleneck).
+    pub fn wire_bytes(&self) -> usize {
+        self.k
+    }
+
+    /// Encode a frame to its quantized bottleneck (the bytes sent on the wire).
+    pub fn encode(&self, frame: &[f32]) -> tract_onnx::prelude::TractResult<Vec<u8>> {
+        let z = self.encoder.run_f32(frame, &[1, self.n])?;
+        Ok(z.iter()
+            .map(|&v| (v * self.scale).round().clamp(-127.0, 127.0) as i8 as u8)
+            .collect())
+    }
+
+    /// Decode a quantized bottleneck back into an `n`-sample frame.
+    pub fn decode(&self, code: &[u8]) -> tract_onnx::prelude::TractResult<Vec<f32>> {
+        let z: Vec<f32> = code.iter().map(|&b| (b as i8) as f32 / self.scale).collect();
+        self.decoder.run_f32(&z, &[1, self.k])
+    }
+
+    /// Decode into an **AI-reconstructed-labeled** frame (FR-8): output of the
+    /// neural gear is never unlabeled — the label rides with the frame to the
+    /// UI via [`LabeledFrame`](crate::ai_label::LabeledFrame).
+    pub fn decode_labeled(
+        &self,
+        code: &[u8],
+    ) -> tract_onnx::prelude::TractResult<crate::ai_label::LabeledFrame<Vec<f32>>> {
+        Ok(crate::ai_label::LabeledFrame::ai(self.decode(code)?))
     }
 }
 
@@ -281,6 +349,88 @@ fn build_onnx(p: &Params, d: Dims) -> ModelProto {
     }
 }
 
+// ── Split encoder / decoder ONNX (for the neural voice codec) ───────────────
+
+fn onnx_dim(v: i64) -> tensor_shape_proto::Dimension {
+    tensor_shape_proto::Dimension {
+        value: Some(tensor_shape_proto::dimension::Value::DimValue(v)),
+        ..Default::default()
+    }
+}
+fn onnx_tensor(name: &str, dims: &[i64], data: &[f32]) -> TensorProto {
+    TensorProto { dims: dims.to_vec(), data_type: 1, float_data: data.to_vec(), name: name.into(), ..Default::default() }
+}
+fn onnx_io(name: &str, len: i64) -> ValueInfoProto {
+    ValueInfoProto {
+        name: name.into(),
+        r#type: Some(TypeProto {
+            value: Some(type_proto::Value::TensorType(type_proto::Tensor {
+                elem_type: 1,
+                shape: Some(TensorShapeProto { dim: vec![onnx_dim(1), onnx_dim(len)] }),
+            })),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+fn onnx_gemm(a: &str, w: &str, b: &str, out: &str) -> NodeProto {
+    NodeProto { input: vec![a.into(), w.into(), b.into()], output: vec![out.into()], op_type: "Gemm".into(), ..Default::default() }
+}
+fn onnx_relu(a: &str, out: &str) -> NodeProto {
+    NodeProto { input: vec![a.into()], output: vec![out.into()], op_type: "Relu".into(), ..Default::default() }
+}
+fn onnx_model(graph: GraphProto) -> ModelProto {
+    ModelProto {
+        ir_version: 8,
+        opset_import: vec![OperatorSetIdProto { domain: String::new(), version: 13 }],
+        producer_name: "lowband".into(),
+        graph: Some(graph),
+        ..Default::default()
+    }
+}
+
+/// Encoder half: `x[1,n] → ReLU(x·W1+b1)·W2+b2 = z[1,k]`.
+fn build_encoder(p: &Params, d: Dims) -> ModelProto {
+    onnx_model(GraphProto {
+        node: vec![
+            onnx_gemm("x", "W1", "b1", "h1p"),
+            onnx_relu("h1p", "h1"),
+            onnx_gemm("h1", "W2", "b2", "z"),
+        ],
+        name: "encoder".into(),
+        input: vec![onnx_io("x", d.n as i64)],
+        output: vec![onnx_io("z", d.k as i64)],
+        initializer: vec![
+            onnx_tensor("W1", &[d.n as i64, d.h as i64], &p.w1),
+            onnx_tensor("b1", &[d.h as i64], &p.b1),
+            onnx_tensor("W2", &[d.h as i64, d.k as i64], &p.w2),
+            onnx_tensor("b2", &[d.k as i64], &p.b2),
+        ],
+        ..Default::default()
+    })
+}
+
+/// Decoder half: `z[1,k] → ReLU(z·W3+b3)·W4+b4 = y[1,n]`.
+fn build_decoder(p: &Params, d: Dims) -> ModelProto {
+    onnx_model(GraphProto {
+        node: vec![
+            onnx_gemm("z", "W3", "b3", "gp"),
+            onnx_relu("gp", "g"),
+            onnx_gemm("g", "W4", "b4", "y"),
+        ],
+        name: "decoder".into(),
+        input: vec![onnx_io("z", d.k as i64)],
+        output: vec![onnx_io("y", d.n as i64)],
+        initializer: vec![
+            onnx_tensor("W3", &[d.k as i64, d.h as i64], &p.w3),
+            onnx_tensor("b3", &[d.h as i64], &p.b3),
+            onnx_tensor("W4", &[d.h as i64, d.n as i64], &p.w4),
+            onnx_tensor("b4", &[d.n as i64], &p.b4),
+        ],
+        ..Default::default()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,6 +475,37 @@ mod tests {
         let energy = f.iter().map(|x| x * x).sum::<f32>() / d.n as f32;
         let rel = mse(f, &recon) / energy;
         assert!(rel < 0.3, "trained MLP reconstruction rel-error too high: {rel:.3}");
+    }
+
+    #[test]
+    fn neural_voice_codec_compresses_and_reconstructs() {
+        // The survival-tier neural codec: encode a frame to a k-byte bottleneck
+        // (far smaller than the PCM frame), transmit that, decode it back.
+        let d = Dims { n: 16, h: 24, k: 6 };
+        let frames = corpus(64, d.n);
+        let codec = NeuralVoiceCodec::train(&frames, d, 400, 0.05).expect("train codec");
+
+        // Compression: k bytes on the wire vs. 2n bytes of PCM.
+        assert_eq!(codec.wire_bytes(), d.k);
+        assert!(codec.wire_bytes() < d.n * 2, "codec must compress below PCM");
+
+        // Encode → (quantized bottleneck) → decode reconstructs the frame.
+        let f = &frames[0];
+        let code = codec.encode(f).expect("encode");
+        assert_eq!(code.len(), d.k, "wire payload is the k-byte bottleneck");
+        let recon = codec.decode(&code).expect("decode");
+        assert_eq!(recon.len(), d.n);
+
+        // FR-8: the gear's output is always AI-labeled.
+        let labeled = codec.decode_labeled(&code).expect("decode labeled");
+        assert_eq!(labeled.label(), Some(crate::ai_label::AI_LABEL));
+        assert!(labeled.provenance.requires_ai_label());
+
+        let energy = f.iter().map(|x| x * x).sum::<f32>() / d.n as f32;
+        let err = mse(f, &recon) / energy;
+        // Split + quantization is lossier than the joint autoencoder but must
+        // still reconstruct far better than silence (rel-error 1.0).
+        assert!(err < 0.6, "neural codec reconstruction rel-error too high: {err:.3}");
     }
 
     #[test]

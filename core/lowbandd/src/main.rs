@@ -22,6 +22,7 @@
 //! [`GearUpdate`](lowband_platform::ipc::IpcEvent::GearUpdate).
 
 mod adpcm;
+mod ai_label;
 mod dataplane;
 mod file_transfer;
 mod inbound;

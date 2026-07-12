@@ -13,6 +13,7 @@
 //! is the runtime that will execute them once trained; it is verified here
 //! against a real (if small) ONNX model.
 
+#![allow(dead_code)] // neural-gear API: used by tests + the voice-loop wiring
 use std::sync::Arc;
 
 use tract_onnx::prelude::*;

@@ -12,6 +12,7 @@
 //! Frame = `N` samples → encoder `[N×K]` → bottleneck `K` → decoder `[K×N]` →
 //! reconstruction. K<N gives real compression, the survival-tier gear's job.
 
+#![allow(dead_code)] // neural-gear API: used by tests + the voice-loop wiring
 use tract_onnx::pb::*;
 
 use crate::neural::OnnxModel;
