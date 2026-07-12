@@ -302,6 +302,101 @@ mod tests {
         assert!((0.2..5.0).contains(&ratio), "voice energy ratio over session off: {ratio:.2}");
     }
 
+    /// Full-duplex two-peer voice *call* — the closest reproduction of a call
+    /// between two machines that's possible without audio hardware. Each peer
+    /// splits its [`SecureSession`] into send/receive halves (exactly as
+    /// `voice_loop::run` does), captures a distinct tone at a 48 kHz "device
+    /// rate", resamples it down to the 8 kHz codec, and transmits — while
+    /// concurrently receiving the far end's stream, decoding it, and resampling
+    /// back up to its device rate. Afterwards each peer must have recovered the
+    /// *other's* tone (real audio, not silence), proving the split-session +
+    /// resampler path interoperates end to end across two independent endpoints.
+    #[test]
+    fn full_duplex_resampled_call_between_two_peers() {
+        use crate::audio_io::{resample, VOICE_SAMPLE_RATE};
+
+        const DEVICE_HZ: u32 = 48_000;
+        const FRAMES: usize = 25; // 0.5 s of 20 ms frames
+        const DEV_FRAME: usize = (DEVICE_HZ as usize) / 50; // 960 samples / 20 ms
+
+        // A loud device-rate tone chunk (drives the VAD to Voice, never suppressed).
+        fn dev_tone(freq: f64) -> Vec<i16> {
+            (0..DEV_FRAME)
+                .map(|i| {
+                    let t = i as f64 / DEVICE_HZ as f64;
+                    (12000.0 * (2.0 * std::f64::consts::PI * freq * t).sin()) as i16
+                })
+                .collect()
+        }
+
+        // One peer of the call: transmit `out_freq` for the whole call while
+        // receiving + reconstructing the far end. Returns the recovered PCM at
+        // the device rate. Mirrors voice_loop's capture/playout halves.
+        fn run_peer(session: SecureSession, out_freq: f64) -> Vec<i16> {
+            let (mut tx, mut rx) = session.split().unwrap();
+            rx.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+
+            let send = thread::spawn(move || {
+                let mut sender = VoiceSender::new();
+                for _ in 0..FRAMES {
+                    let chunk = dev_tone(out_freq);
+                    let f8k = resample(&chunk, DEVICE_HZ, VOICE_SAMPLE_RATE);
+                    let (_o, bytes) = sender.process(&f8k);
+                    if let Some(b) = bytes {
+                        tx.send(&b).unwrap();
+                    }
+                }
+            });
+
+            let mut receiver = VoiceReceiver::new();
+            let mut recovered = Vec::new();
+            for _ in 0..FRAMES {
+                let bytes = rx.recv().unwrap();
+                let frame = VoiceFrame::decode(&bytes).unwrap();
+                let pcm8k = receiver.decode(frame);
+                recovered.extend(resample(&pcm8k, VOICE_SAMPLE_RATE, DEVICE_HZ));
+            }
+            send.join().unwrap();
+            recovered
+        }
+
+        let resp_key = StaticKeypair::generate();
+        let resp_pub = resp_key.public_key_bytes();
+        let init_key = StaticKeypair::generate();
+        let code = "100005680";
+        let resp_sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let resp_addr = resp_sock.local_addr().unwrap();
+
+        // Peer B (responder) transmits a 660 Hz tone.
+        let peer_b = thread::spawn(move || {
+            let sess = SecureSession::accept(resp_sock, &resp_key, code).unwrap();
+            run_peer(sess, 660.0)
+        });
+
+        // Peer A (initiator) transmits a 440 Hz tone.
+        let init_sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let sess =
+            SecureSession::connect(init_sock, resp_addr, &init_key, resp_pub, code).unwrap();
+        let a_recovered = run_peer(sess, 440.0);
+        let b_recovered = peer_b.join().unwrap();
+
+        // Both peers reconstructed a full call's worth of device-rate audio…
+        assert_eq!(a_recovered.len(), FRAMES * DEV_FRAME);
+        assert_eq!(b_recovered.len(), FRAMES * DEV_FRAME);
+        // …and it's real audio, not silence: energy comparable to the sent tone.
+        let rms = |v: &[i16]| {
+            (v.iter().map(|&s| (s as f64).powi(2)).sum::<f64>() / v.len().max(1) as f64).sqrt()
+        };
+        let sent_rms = rms(&dev_tone(440.0));
+        for (who, got) in [("A", &a_recovered), ("B", &b_recovered)] {
+            let ratio = rms(got) / sent_rms.max(1.0);
+            assert!(
+                (0.2..5.0).contains(&ratio),
+                "peer {who} recovered tone energy off: {ratio:.2}"
+            );
+        }
+    }
+
     /// Establish a loopback session and return a sender + the client session.
     /// The server thread just completes the handshake and drains datagrams.
     fn loopback_sender() -> (VoiceSender, SecureSession, thread::JoinHandle<()>) {
