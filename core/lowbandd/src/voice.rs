@@ -126,27 +126,41 @@ impl VoiceSender {
         Self { dtx: DtxEncoder::new(), codec: CodecEncoder::new() }
     }
 
-    /// Process and transmit one 20 ms PCM frame. Silent frames are suppressed
-    /// or sent as tiny SID updates by the DTX gate (NFR-5 idle economy).
-    pub fn send_frame(
-        &mut self,
-        session: &mut SecureSession,
-        pcm: &[i16],
-    ) -> Result<SendOutcome, lowband_crypto::SessionError> {
+    /// Run one 20 ms PCM frame through VAD → DTX → codec and return the wire
+    /// bytes to transmit (`None` when the DTX gate suppresses the frame). This
+    /// is transport-agnostic — the daemon's capture loop sends the bytes over
+    /// the split [`SecureSender`](lowband_crypto::SecureSender); tests send
+    /// over a whole session via [`send_frame`](Self::send_frame).
+    pub fn process(&mut self, pcm: &[i16]) -> (SendOutcome, Option<Vec<u8>>) {
         let level = rms(pcm);
         let voice_active = level >= VAD_RMS_THRESHOLD;
         match self.dtx.observe_vad(voice_active) {
             DtxAction::Voice => {
                 let data = self.codec.encode(pcm);
-                session.send(&VoiceFrame::Voice { samples: pcm.len() as u16, data }.encode())?;
-                Ok(SendOutcome::Voice)
+                let bytes = VoiceFrame::Voice { samples: pcm.len() as u16, data }.encode();
+                (SendOutcome::Voice, Some(bytes))
             }
             DtxAction::Sid => {
-                session.send(&VoiceFrame::Sid { rms: level.min(u16::MAX as f64) as u16 }.encode())?;
-                Ok(SendOutcome::Sid)
+                let bytes = VoiceFrame::Sid { rms: level.min(u16::MAX as f64) as u16 }.encode();
+                (SendOutcome::Sid, Some(bytes))
             }
-            DtxAction::Suppress => Ok(SendOutcome::Suppressed),
+            DtxAction::Suppress => (SendOutcome::Suppressed, None),
         }
+    }
+
+    /// Process and transmit one 20 ms PCM frame over a whole session (test/
+    /// convenience path). Silent frames are suppressed or sent as tiny SID
+    /// updates by the DTX gate (NFR-5 idle economy).
+    pub fn send_frame(
+        &mut self,
+        session: &mut SecureSession,
+        pcm: &[i16],
+    ) -> Result<SendOutcome, lowband_crypto::SessionError> {
+        let (outcome, bytes) = self.process(pcm);
+        if let Some(b) = bytes {
+            session.send(&b)?;
+        }
+        Ok(outcome)
     }
 }
 

@@ -183,6 +183,60 @@ impl SecureSession {
     pub fn needs_rekey(&self) -> bool {
         self.send.needs_rekey()
     }
+
+    /// Split into independent send and receive halves for full-duplex use —
+    /// e.g. a capture thread sealing outbound audio while a playout thread
+    /// opens inbound audio, both on the same peer. The two halves clone the
+    /// UDP socket (concurrent send/recv on one UDP socket is safe) and each
+    /// owns one direction's cipher.
+    pub fn split(self) -> io::Result<(SecureSender, SecureReceiver)> {
+        let send_socket = self.socket.try_clone()?;
+        Ok((
+            SecureSender { socket: send_socket, peer: self.peer, cipher: self.send },
+            SecureReceiver { socket: self.socket, cipher: self.recv },
+        ))
+    }
+}
+
+/// The send half of a split [`SecureSession`]: seals and transmits datagrams.
+pub struct SecureSender {
+    socket: UdpSocket,
+    peer: SocketAddr,
+    cipher: DatagramCipher,
+}
+
+impl SecureSender {
+    /// Seal `plaintext` and transmit it to the peer.
+    pub fn send(&mut self, plaintext: &[u8]) -> Result<()> {
+        let sealed = self.cipher.seal(plaintext);
+        self.socket.send_to(sealed.as_bytes(), self.peer)?;
+        Ok(())
+    }
+
+    /// Whether the send cipher has hit a rekey threshold.
+    pub fn needs_rekey(&self) -> bool {
+        self.cipher.needs_rekey()
+    }
+}
+
+/// The receive half of a split [`SecureSession`]: receives and opens datagrams.
+pub struct SecureReceiver {
+    socket: UdpSocket,
+    cipher: DatagramCipher,
+}
+
+impl SecureReceiver {
+    /// Receive one datagram and return its decrypted plaintext.
+    pub fn recv(&mut self) -> Result<Vec<u8>> {
+        let mut buf = [0u8; 8192];
+        let (n, _from) = self.socket.recv_from(&mut buf)?;
+        self.cipher.open_bytes(&buf[..n]).ok_or(SessionError::AuthFailed)
+    }
+
+    /// Set a read timeout on the underlying socket.
+    pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.socket.set_read_timeout(dur)
+    }
 }
 
 #[cfg(test)]
@@ -192,6 +246,37 @@ mod tests {
 
     fn loopback() -> UdpSocket {
         UdpSocket::bind("127.0.0.1:0").expect("bind loopback")
+    }
+
+    #[test]
+    fn split_session_is_full_duplex() {
+        // Establish a session, split it, and confirm the send/receive halves
+        // carry traffic independently (the shape the full-duplex voice loop
+        // relies on: capture thread seals, playout thread opens).
+        let resp_static = StaticKeypair::generate();
+        let resp_pub = resp_static.public_key_bytes();
+        let init_static = StaticKeypair::generate();
+        let code = "100002468";
+        let resp_sock = loopback();
+        let resp_addr = resp_sock.local_addr().unwrap();
+
+        let server = thread::spawn(move || {
+            let sess = SecureSession::accept(resp_sock, &resp_static, code).unwrap();
+            let (mut tx, mut rx) = sess.split().unwrap();
+            rx.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let got = rx.recv().unwrap();
+            assert_eq!(&got, b"mic frame");
+            tx.send(b"speaker frame").unwrap();
+        });
+
+        let init_sock = loopback();
+        let sess = SecureSession::connect(init_sock, resp_addr, &init_static, resp_pub, code).unwrap();
+        let (mut tx, mut rx) = sess.split().unwrap();
+        rx.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        tx.send(b"mic frame").unwrap();
+        let reply = rx.recv().unwrap();
+        assert_eq!(&reply, b"speaker frame");
+        server.join().unwrap();
     }
 
     #[test]

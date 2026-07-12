@@ -27,4 +27,4 @@ pub use relay_guard::{
     DatagramCipher, E2eeRelayBridge, RelayPayload, RELAY_GUARD_OVERHEAD_BYTES,
 };
 pub use short_auth_string::ShortAuthString;
-pub use udp_session::{SecureSession, SessionError};
+pub use udp_session::{SecureReceiver, SecureSender, SecureSession, SessionError};

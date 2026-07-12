@@ -42,6 +42,9 @@ mod av1_codec;
 // Mic/speaker device I/O plumbing (device-independent parts always compiled;
 // the cpal device code is behind the `audio` feature).
 mod audio_io;
+// Full-duplex voice loop (mic ↔ speaker over the E2EE session), behind `audio`.
+#[cfg(feature = "audio")]
+mod voice_loop;
 // ONNX neural-inference runtime (pure-Rust tract), behind the `onnx` feature.
 #[cfg(feature = "onnx")]
 mod neural;
@@ -196,6 +199,8 @@ fn parse_args() -> Config {
 /// Run the unified inbound router on an established session, in the
 /// background, until shutdown. Received control messages and file-transfer
 /// progress are logged; inbound files land under `data_dir/inbox.*`.
+/// (Superseded by the full-duplex voice loop under `--features audio`.)
+#[cfg_attr(feature = "audio", allow(dead_code))]
 fn spawn_session_worker(mut session: lowband_crypto::SecureSession, data_dir: PathBuf) {
     use lowband_messaging::clipboard::ClipboardGrant;
 
@@ -449,11 +454,21 @@ fn main() {
 
     install_signal_handlers();
 
-    // Establish the peer session if requested, then run the inbound router on
-    // it so the daemon actually processes the encrypted channel (chat,
-    // clipboard, panic, file transfer). The media pipeline is a later
-    // milestone; the control/data planes are live now.
+    // Establish the peer session if requested. With `--features audio` the
+    // daemon runs the full-duplex voice loop (mic ↔ speaker over the E2EE
+    // session); otherwise it runs the receive-only inbound router (chat,
+    // clipboard, panic, file transfer over the encrypted channel).
     if let Some(session) = establish_peer_session(&cfg.session_mode, cfg.stun_server) {
+        #[cfg(feature = "audio")]
+        {
+            let data_dir = cfg.data_dir.clone();
+            thread::spawn(move || {
+                if let Err(e) = voice_loop::run(session, data_dir) {
+                    eprintln!("lowbandd: voice loop error: {e}");
+                }
+            });
+        }
+        #[cfg(not(feature = "audio"))]
         spawn_session_worker(session, cfg.data_dir.clone());
     }
 

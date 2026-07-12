@@ -111,28 +111,25 @@ pub struct Speaker {
 impl Speaker {
     /// Open the default output device and start playing samples pulled from
     /// `pcm`. Returns [`AudioError::NoDevice`] when the host has no output.
+    ///
+    /// Opens a mono 8 kHz stream to match the voice codec — the telephony rate
+    /// most audio hardware supports, so no resampling is needed. (A device that
+    /// rejects 8 kHz returns [`AudioError::Backend`]; a resampling layer for
+    /// those is the follow-up.)
     pub fn open(pcm: SharedPcm) -> Result<Self, AudioError> {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
         let host = cpal::default_host();
         let device = host.default_output_device().ok_or(AudioError::NoDevice)?;
-        let supported =
-            device.default_output_config().map_err(|e| AudioError::Backend(e.to_string()))?;
-        let channels = supported.channels() as usize;
-        let config = supported.config();
-
         let stream = device
             .build_output_stream(
-                config,
+                voice_config(),
                 move |data: &mut [f32], _| {
-                    // Pull one mono sample per frame, replicate across channels.
-                    let frames = data.len() / channels.max(1);
-                    let mut mono = vec![0i16; frames];
+                    // Mono: one sample per frame. Pull from the playout queue.
+                    let mut mono = vec![0i16; data.len()];
                     pcm.pop_into(&mut mono);
-                    for (frame, &s) in data.chunks_mut(channels.max(1)).zip(mono.iter()) {
-                        for ch in frame.iter_mut() {
-                            *ch = i16_to_f32(s);
-                        }
+                    for (out, &s) in data.iter_mut().zip(mono.iter()) {
+                        *out = i16_to_f32(s);
                     }
                 },
                 |err| eprintln!("lowbandd: speaker stream error: {err}"),
@@ -141,6 +138,19 @@ impl Speaker {
             .map_err(|e| AudioError::Backend(e.to_string()))?;
         stream.play().map_err(|e| AudioError::Backend(e.to_string()))?;
         Ok(Self { _stream: stream })
+    }
+}
+
+/// The voice stream config: mono, 8 kHz — matched to the codec.
+#[cfg(feature = "audio")]
+pub const VOICE_SAMPLE_RATE: u32 = 8000;
+
+#[cfg(feature = "audio")]
+fn voice_config() -> cpal::StreamConfig {
+    cpal::StreamConfig {
+        channels: 1,
+        sample_rate: cpal::SampleRate(VOICE_SAMPLE_RATE),
+        buffer_size: cpal::BufferSize::Default,
     }
 }
 
@@ -153,28 +163,18 @@ pub struct Microphone {
 
 #[cfg(feature = "audio")]
 impl Microphone {
+    /// Opens a mono 8 kHz input stream matched to the voice codec.
     pub fn open(pcm: SharedPcm) -> Result<Self, AudioError> {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
         let host = cpal::default_host();
         let device = host.default_input_device().ok_or(AudioError::NoDevice)?;
-        let supported =
-            device.default_input_config().map_err(|e| AudioError::Backend(e.to_string()))?;
-        let channels = supported.channels() as usize;
-        let config = supported.config();
-
         let stream = device
             .build_input_stream(
-                config,
+                voice_config(),
                 move |data: &[f32], _| {
-                    // Downmix interleaved channels to mono i16.
-                    let mono: Vec<i16> = data
-                        .chunks(channels.max(1))
-                        .map(|frame| {
-                            let avg = frame.iter().copied().sum::<f32>() / channels.max(1) as f32;
-                            f32_to_i16(avg)
-                        })
-                        .collect();
+                    // Mono 8 kHz: one sample per frame → i16 into the queue.
+                    let mono: Vec<i16> = data.iter().map(|&s| f32_to_i16(s)).collect();
                     pcm.push(&mono);
                 },
                 |err| eprintln!("lowbandd: microphone stream error: {err}"),
